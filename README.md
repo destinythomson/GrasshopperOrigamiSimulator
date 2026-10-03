@@ -26,6 +26,7 @@ The physics follows the original web app by [Amanda Ghassaei](http://www.amandag
 - [Origami Folding: A Structural Engineering Approach](http://www3.eng.cam.ac.uk/~sdg/preprint/5OSME.pdf) — Mark Schenk and Simon D. Guest
 - [Freeform Variations of Origami](http://www.tsg.ne.jp/TT/cg/TachiFreeformOrigami2010.pdf) — Tomohiro Tachi
 
+The 3D Print group's layered hinge-and-panel design is inspired by [Ready-to-Fold Origami Sheets](https://www.thingiverse.com/thing:5468514) by Darknight35 on Thingiverse.
 The example crease patterns come from the original repo's [`assets/`](https://github.com/amandaghassaei/OrigamiSimulator/tree/7855983a613c879c171b2b1557f8cd102d2640cf/assets) folder.
 
 ## License

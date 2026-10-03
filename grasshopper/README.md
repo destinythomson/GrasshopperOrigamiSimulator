@@ -92,7 +92,7 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 
 ## 3D print
 
-The **3D Print** group turns the same crease layers into a flat, printable sheet of the unfolded pattern. Its structure copies a crane STL that printed and folded well:
+The **3D Print** group turns the same crease layers into a flat, printable sheet of the unfolded pattern. Its structure is inspired by the printable sheets in [Ready-to-Fold Origami Sheets](https://www.thingiverse.com/thing:5468514) by Darknight35 on Thingiverse, which print and fold well:
 
 - a **hinge layer** over the whole sheet, from z 0 to the Hinge Thickness. This thin layer is what bends;
 - a **panel layer** on top of it, up to the Total Height, with a 1.2 mm gap centred on every Mountain, Valley and Hinge line;
