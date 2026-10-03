@@ -119,17 +119,19 @@ What each layer becomes:
 
 Constants at the top of `OrigamiPrint` (double-click the component): `GROOVE` 1.2 mm, `HOLE_D` 5 mm, `HOLE_SEGS` 48 sides per hole, `EPS` 0.01 mm. `EPS` is a clearance that keeps the panels just inside the outline, the holes and the slots, so the mesh can be built as one closed shell. It is far below what a slicer resolves.
 
+**Line ends that nearly meet** are joined the same way as in the solver: ends closer than `MERGE_REL` (0.005) × the pattern's radius, or the document tolerance if that is larger, become one vertex. The distance is relative to the pattern, so it does not change with Size, and it only decides which ends meet. Grooves, holes and the outline keep their own sizes. Patterns traced from SVGs often miss by a few hundredths of a unit; the example crane misses by up to 0.045 on a 100-unit sheet, and without this its print came out as 4 separate open shells.
+
 **Printing it:** select **Print Mesh**, right-click and choose *Bake*. Then `_Export` it as STL with units set to millimetres. The mesh is in millimetres and placed to the right of the pattern. If the Rhino document is not in millimetres, the component warns you, because the numbers are millimetres regardless.
 
 **Print Info** reports:
-- the scale and the panel count;
+- the scale, `mergeTol` (the joining distance above, in mm) and the panel count;
 - `insetFallbacks` and `facesDropped`: faces smaller than 1.2 × 1.2 mm after grooving get no panel;
 - the hole count;
 - whether the mesh is closed and manifold, plus how many small triangulation repairs were made;
 - the volume, and the time per stage;
 - `foldLimitDeg = 2·atan(1.2 / (2 × panel height))`: when a groove closes on the inside of a fold, its panel walls touch at this angle. Beyond it the hinge has to stretch. It is 161° at the default 0.1 mm panels and about 100° at 0.5 mm. If you raise Total Height a lot, expect stiffer folds.
 
-**About the holes:** the reference crane has holes at its centre and at the 4 bird-base points. The bird-base points have 4 creases, the same as several unholed crossings in that pattern, so no degree threshold reproduces it exactly. At the default of 6, the crane gets only the centre hole; at 4 it gets 13.
+**About the holes:** the reference crane has holes at its centre and at the 4 bird-base points. The bird-base points have 4 creases, the same as several unholed crossings in that pattern, so no degree threshold reproduces it exactly. At the default of 6, the crane gets only the centre hole; at 4 it gets 14.
 
 With every crease layer empty, the group shows the same Miura demo as the solver.
 
@@ -192,6 +194,7 @@ When every crease can reach its target (a single crease, or any full fold), both
 - **My pattern is ignored and the demo shows.** Check the layer names (`Border`, `Mountain`, `Valley`, `Facet`, `Cut`, `Hinge`) and that the objects are not hidden.
 - **It folds the wrong way.** Swap the M and V inputs, or set Fold negative.
 - **A pattern that folds in the web app tangles here.** Check that its partial folds carry `TargetAngleDeg` (the `targets` field in Info lists the angles that were read), and fold it gradually: the web app's crane also tangles if Fold jumps straight from 0 to 1.
+- **Print Info says the mesh is not closed.** Look for lines that cross or overlap without meeting, or for gaps larger than `mergeTol` (Print Info). Close those gaps in the drawing; raising the document tolerance also joins them.
 - **It is slow.** Solve time grows with vertex count. Patterns with thousands of vertices run, but slowly.
 - **The solver component is orange.** It shows warning CS1701, a harmless .NET assembly-version notice from Rhino 8. Wires from the layer pipelines are orange while those layers are empty.
 

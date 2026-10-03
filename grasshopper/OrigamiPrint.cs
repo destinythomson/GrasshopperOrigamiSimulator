@@ -46,6 +46,8 @@ static class OrigamiPrint
   const double EPS = 0.01;              // panels stay this far inside the hinge layer's outline, holes and slots
   const double MIN_AREA = GROOVE * GROOVE;   // panel pieces smaller than this are dropped
   const double GAP_X = 0.2;             // output sits right of the pattern, this fraction of its width away
+  const double MERGE_REL = 0.005;       // line ends closer than this x the pattern radius are merged (as OrigamiSolver.cs;
+                                        // web app vertTol = 3 px, js/globals.js:63). Pattern-relative, not mm.
   const bool DEMO_WHEN_EMPTY = true;    // no lines at all -> the solver's Miura 4x4 demo
 
   const int KB = 0, KG = 1, KC = 2;     // border, groove (M/V/H), cut
@@ -60,7 +62,7 @@ static class OrigamiPrint
     public List<string> Errors = new List<string>();
     public List<string> Warnings = new List<string>();
     // numbers for tests and Info
-    public double Scale, BaseArea, PanelArea, Volume, Ms;
+    public double Scale, MergeTol, BaseArea, PanelArea, Volume, Ms;
     public string Stages = "";   // ms per build stage
     public int TJunctions, Slivers;
     public int Segments, Vertices, Faces, Panels, InsetFallbacks, FacesDropped, Holes, Cuts, Shells;
@@ -147,14 +149,23 @@ static class OrigamiPrint
     res.Segments = lines.Count;
     res.Cuts = groups[KC].Count;
 
-    // 4. planar arrangement: split at crossings and T-junctions (same as OrigamiSolver.cs Build steps 2-3)
+    // 4. planar arrangement: split at crossings and T-junctions (same as OrigamiSolver.cs Build steps 2-3).
+    //    Ends merge within MERGE_REL x the pattern radius (largest distance from the bounding-box centre), so
+    //    drawings whose lines miss by more than the document tolerance still close. Only the arrangement uses
+    //    this distance; insets, holes, booleans and loops keep tol.
+    BoundingBox lb0 = BoundingBox.Empty;
+    foreach (Line ln in lines) { lb0.Union(ln.From); lb0.Union(ln.To); }
+    double radius = 0;
+    foreach (Line ln in lines) radius = Math.Max(radius, Math.Max(lb0.Center.DistanceTo(ln.From), lb0.Center.DistanceTo(ln.To)));
+    double mergeTol = Math.Max(tol, MERGE_REL * radius);
+    res.MergeTol = mergeTol;
     int n = lines.Count;
     List<double>[] cuts = new List<double>[n];
     BoundingBox[] boxes = new BoundingBox[n];
     for (int i = 0; i < n; i++)
     {
       cuts[i] = new List<double> { 0.0, 1.0 };
-      boxes[i] = lines[i].BoundingBox; boxes[i].Inflate(tol);
+      boxes[i] = lines[i].BoundingBox; boxes[i].Inflate(mergeTol);
     }
     for (int i = 0; i < n; i++)
       for (int j = i + 1; j < n; j++)
@@ -162,10 +173,10 @@ static class OrigamiPrint
         if (!Overlap(boxes[i], boxes[j])) continue;
         Line la = lines[i], lb = lines[j];
         double ta, tb;
-        if (Rhino.Geometry.Intersect.Intersection.LineLine(la, lb, out ta, out tb, tol, true))
-        { AddCut(cuts[i], ta, la.Length, tol); AddCut(cuts[j], tb, lb.Length, tol); }
-        EndpointCuts(la, lb, cuts[i], tol);
-        EndpointCuts(lb, la, cuts[j], tol);
+        if (Rhino.Geometry.Intersect.Intersection.LineLine(la, lb, out ta, out tb, mergeTol, true))
+        { AddCut(cuts[i], ta, la.Length, mergeTol); AddCut(cuts[j], tb, lb.Length, mergeTol); }
+        EndpointCuts(la, lb, cuts[i], mergeTol);
+        EndpointCuts(lb, la, cuts[j], mergeTol);
       }
     List<Point3d> verts = new List<Point3d>();
     Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>();
@@ -176,9 +187,9 @@ static class OrigamiPrint
       double len = lines[i].Length;
       for (int k = 0; k + 1 < ts.Count; k++)
       {
-        if ((ts[k + 1] - ts[k]) * len <= tol) continue;
-        int u = VertexId(lines[i].PointAt(ts[k]), verts, grid, tol);
-        int w = VertexId(lines[i].PointAt(ts[k + 1]), verts, grid, tol);
+        if ((ts[k + 1] - ts[k]) * len <= mergeTol) continue;
+        int u = VertexId(lines[i].PointAt(ts[k]), verts, grid, mergeTol);
+        int w = VertexId(lines[i].PointAt(ts[k + 1]), verts, grid, mergeTol);
         if (u == w) continue;
         long ek = EdgeKey(u, w);
         int old;
@@ -450,6 +461,7 @@ static class OrigamiPrint
     List<string> L = new List<string>
     {
       "scale=" + r.Scale.ToString("G6", IC) + " (pattern units -> mm)",
+      "mergeTol=" + r.MergeTol.ToString("G3", IC) + " mm (line ends closer than this are joined)",
       "segments=" + r.Segments + " vertices=" + r.Vertices + " faces=" + r.Faces,
       "panels=" + r.Panels + " insetFallbacks=" + r.InsetFallbacks + " facesDropped=" + r.FacesDropped,
       "holes=" + r.Holes + " cuts=" + r.Cuts,

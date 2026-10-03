@@ -43,3 +43,12 @@ low — mechanical edits and MCP runs.
   - Regression (Miura demo, Simple Vertex, Map Fold, Square Twist, Miura-ori, Waterbomb Tessellation; Fold 0.5 and 1): dynamic — same topology, all finite, mvSenseOk all, strain equal or lower everywhere; Kangaroo — identical to before. PASS.
   - `OrigamiPrint.cs` untouched (git diff). PASS.
 - [x] 5 Docs (`grasshopper/README.md`: partial folds, scale, MERGE_REL, Info fields, Kangaroo crane limitation, troubleshooting; comparison-table caveat. `examples/README.md`: limitation replaced)
+
+### Follow-up 2026-10-03 — print merge tolerance
+- [x] `OrigamiPrint.cs` arrangement (box inflate, LineLine, AddCut, EndpointCuts, piece length, VertexId) now uses `mergeTol = max(tol, MERGE_REL × radius)`, MERGE_REL 0.005, radius = largest distance from the lines' bounding-box centre, in the mm frame. Insets, holes, booleans, loops keep `tol`. Info gains `mergeTol=`. Pushed into `OrigamiSim.gh` (previous file: `archive/OrigamiSim_v6.gh`).
+- Verified in slot `aardvark` (harness = HEAD vs new source on the same inputs, GH defaults 158 / 0.3 / 0.2 / N 6):
+  - Crane (`OrigamiExamples.3dm` and `patterns.json`, tol 0.01): closed False, 4 shells, 79 vertices → closed, manifold, 1 shell, 60 vertices, 0 fallbacks. Same mesh at tol 0.5 before and after.
+  - Unchanged mesh (vertex hash): Map Fold, Simple Vertex, Waterbomb Base, Bird Base, Frog Base, Miura-ori, Waterbomb Tessellation, Square Twist @0.01.
+  - Changed, all from drawing noise ≤ 0.05 units being joined: Huffman (crease ends 0.05 outside the border now snap; bbox 143.035 → 142.954 mm = border), Popup Simple @0.01 (non-manifold → manifold), Lang (831/559 → 546 vertices, 55 → 0 fallbacks), Square Twist @0.001. Hypar: one point 0.34 units off a diagonal now joins (the solver and web app do the same); volume +0.025 mm³.
+  - Crane reference: N6 top-surface raster vs STL 0.1505 % → 0.1498 % (this harness; old vs new differ in 38 of 2.5 M pixels). One vertex pair 0.05 mm apart joins; at N4 that vertex gets a 14th hole (71.46, −60.86).
+  - Saved file reloaded with the crane drawn at tol 0.01: 0 Error messages, Print Info `vertices=60 … shells=1 closed=True manifold=True`, solver `nodes=60 faces=104`.
