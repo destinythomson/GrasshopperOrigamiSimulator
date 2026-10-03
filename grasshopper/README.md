@@ -1,6 +1,6 @@
 # Origami Simulator for Grasshopper
 
-A Grasshopper (Rhino 8) definition that folds a crease pattern the way [origamisimulator.org](https://origamisimulator.org/) does. It is a CPU port of this repo's dynamic solver, described in *Fast, Interactive Origami Simulation using GPU Computation* (Ghassaei, Demaine, Gershenfeld, 7OSME).
+A Grasshopper (Rhino 8) definition that folds a crease pattern the way [origamisimulator.org](https://origamisimulator.org/) does. It is a CPU port of the dynamic solver from [Origami Simulator](https://github.com/amandaghassaei/OrigamiSimulator), described in *Fast, Interactive Origami Simulation using GPU Computation* (Ghassaei, Demaine, Gershenfeld, 7OSME).
 
 Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam"). Every crease is an angular spring that pulls the fold angle toward `target × Fold`. Every triangle has springs that keep its corner angles flat. Each solve runs 100 explicit-Euler steps with the same time step rule as the web app.
 
@@ -15,7 +15,6 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 | `OrigamiSim_Kangaroo.gh` | The Kangaroo2 version of the definition. See [Kangaroo version](#kangaroo-version). |
 | `OrigamiKangaroo.cs`, `OrigamiKangarooReadout.cs` | The sources of its Origami Goals and Origami Readout components. |
 | `examples/stl_groove_lines.py`, `examples/crane_print_reference.json` | Recover crease lines from a printable-origami STL; the crane reference used to check the 3D Print output. |
-| `archive/` | Earlier versions of the definition. |
 
 ## Open and run
 
@@ -29,7 +28,7 @@ Without the timer, each change to an input runs one solve of 100 steps.
 
 ## Use your own crease pattern
 
-The definition reads the crease pattern straight from Rhino layers. Anything on these layers is picked up automatically and updates live as you draw, move or delete it. The line types follow the web app's SVG import (`js/pattern.js`).
+The definition reads the crease pattern straight from Rhino layers. Anything on these layers is picked up automatically and updates live as you draw, move or delete it. The line types follow the web app's SVG import ([`js/pattern.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/pattern.js)).
 
 | Layer | Solver input | What it does in the simulation |
 |---|---|---|
@@ -54,7 +53,7 @@ Faces with more than three sides are triangulated, and the added diagonals act a
 
 **Partial folds.** In the web app a crease's stroke opacity sets how far it folds: opacity × 180°. Here, give the Mountain or Valley line a User Text entry `TargetAngleDeg` with a value from 0 to 180 (Properties panel → Attribute User Text, or the `SetUserText` command). At Fold = 1 the crease folds to that angle; lines without it fold to 180°. The example patterns already carry it. Patterns such as the crane need it: forcing their 45° and 135° creases to 180° asks for a shape that cannot exist, and the sheet tangles. The value is read through the layer pipelines on every solve, so an edit takes effect the next time the solver runs (move Fold, or run the Animate timer). Curves wired in some other way, for example internalised in a parameter, have no Rhino object to read from and fold to 180°.
 
-**Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does (`js/model.js`). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
+**Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does ([`js/model.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/model.js)). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
 
 ## Constants
 
@@ -218,8 +217,4 @@ The Miura picture below was taken with the earlier goal weights, when the two di
 
 ## How it was built
 
-The canvas was assembled headlessly through the Rhino MCP (`g1_*` tools for placement and wiring; `run_csharp` for the script code, groups and save). The build plan and verification results are in `plans/grasshopper-origami-solver.md`.
-
-The 3D Print group was added the same way; its plan, design changes and test results are in `plans/grasshopper-print-export.md`.
-
-The Kangaroo version was built the same way, starting from a copy of this definition. Its probes, design changes and test results are in `plans/grasshopper-kangaroo-solver.md`.
+The canvas was assembled headlessly through the Rhino MCP (`g1_*` tools for placement and wiring; `run_csharp` for the script code, groups and save). The 3D Print group was added the same way, and the Kangaroo version was built the same way, starting from a copy of this definition.

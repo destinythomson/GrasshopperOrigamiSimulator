@@ -1,9 +1,9 @@
-assets/attrib.txt
 .idea/
 todo.rtf
 *.DS_Store
 
-CreasePatternScripts/**/*.pdf
-CreasePatternScripts/**/*.svg
 # Rhino lock files
 *.rhl
+
+# Planning records (kept locally, not in the repo)
+plans/

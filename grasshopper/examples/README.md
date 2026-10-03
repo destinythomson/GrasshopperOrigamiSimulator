@@ -1,10 +1,10 @@
 # Example crease patterns
 
-`OrigamiExamples.3dm` holds 10 flat crease patterns from this repo's `assets/` folder, drawn as Rhino lines. Each pattern is scaled so its longest side is 100 units and laid out on a 5-column grid.
+`OrigamiExamples.3dm` holds 10 flat crease patterns from the original web app's [`assets/`](https://github.com/amandaghassaei/OrigamiSimulator/tree/7855983a613c879c171b2b1557f8cd102d2640cf/assets) folder, drawn as Rhino lines. Each pattern is scaled so its longest side is 100 units and laid out on a 5-column grid.
 
 ## Layers
 
-Each crease type has its own layer. The colours match the web app's SVG convention (`js/pattern.js`, `typeForStroke`).
+Each crease type has its own layer. The colours match the web app's SVG convention ([`js/pattern.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/pattern.js), `typeForStroke`).
 
 | Layer | Colour | Solver input |
 |---|---|---|
@@ -46,8 +46,10 @@ Both definitions read the crease layers directly through Geometry Pipelines (`*M
 
 ## Regenerating
 
+The source SVGs are not in this repo. Download the ones you need from the original [`assets/`](https://github.com/amandaghassaei/OrigamiSimulator/tree/7855983a613c879c171b2b1557f8cd102d2640cf/assets) folder (for example `https://raw.githubusercontent.com/amandaghassaei/OrigamiSimulator/7855983a613c879c171b2b1557f8cd102d2640cf/assets/Origami/traditionalCrane.svg`), then run:
+
 ```bash
-python grasshopper/examples/svg_to_segments.py grasshopper/examples/patterns.json "Name=assets/path.svg" ...
+python grasshopper/examples/svg_to_segments.py grasshopper/examples/patterns.json "Name=path/to/pattern.svg" ...
 ```
 
-Then run `build_examples_3dm.py` inside Rhino 8 with the ScriptEditor. Change `PICK` in that script to choose the patterns. The parser handles `line`, `path` (M/L/H/V/Z only), `polyline`, `polygon` and `rect`, along with group stroke inheritance and transforms. If a pattern uses curves (for example the `assets/Curved` files), the parser raises an error.
+Then run `build_examples_3dm.py` inside Rhino 8 with the ScriptEditor. Change `PICK` in that script to choose the patterns. The parser handles `line`, `path` (M/L/H/V/Z only), `polyline`, `polygon` and `rect`, along with group stroke inheritance and transforms. If a pattern uses curves (for example the upstream `assets/Curved` files), the parser raises an error.
