@@ -34,15 +34,15 @@ The definition reads the crease pattern straight from Rhino layers. Anything on 
 | Layer | Solver input | What it does in the simulation |
 |---|---|---|
 | `Border` | B | The outer edge of the paper. |
-| `Mountain` | M | Folds toward −180° at Fold = 1. |
-| `Valley` | V | Folds toward +180° at Fold = 1. |
+| `Mountain` | M | Folds toward −180° at Fold = 1, or toward −`TargetAngleDeg` (see below). |
+| `Valley` | V | Folds toward +180° at Fold = 1, or toward +`TargetAngleDeg`. |
 | `Facet` | F | Flat crease: held at 0° with the facet stiffness. Use it to split faces into triangles your way. |
 | `Cut` | C | The paper is cut along the line. The two sides become separate edges; the end of a slit inside the sheet stays connected. |
 | `Hinge` | H | An edge with no fold spring: the panels on either side rotate freely. |
 | `Labels` | — | Ignored. |
 | `Anchors` (optional) | Anchors | Points on vertices that should stay still. |
 
-1. Draw the pattern on these layers. Keep it planar. Lines should meet within the document's absolute tolerance; crossings and T-junctions are split automatically.
+1. Draw the pattern on these layers. Keep it planar. Endpoints closer than 0.5 % of the pattern's radius (or the document tolerance, if that is larger) are merged, as the web app merges points within 3 px. Crossings and T-junctions are split automatically.
 2. Layers can be top level or nested, for example `Origami::Mountain`: the filters are `*Mountain`, `*Valley` and so on, so any layer whose full path ends in that name is used. Avoid other layers ending in those words.
 3. Polylines and rectangles are split into their straight segments. Curved segments are approximated by short straight lines, and the solver shows a warning, because curved creases are not simulated.
 4. Hidden objects are ignored; locked objects are included. To change a layer name, double-click its pipeline in the **Pattern inputs** group and edit the layer filter.
@@ -51,6 +51,10 @@ The definition reads the crease pattern straight from Rhino layers. Anything on 
 With every crease layer empty, the solver falls back to the built-in demo.
 
 Faces with more than three sides are triangulated, and the added diagonals act as Facet creases, as in the web app. Lines that dangle (end without meeting anything) are ignored.
+
+**Partial folds.** In the web app a crease's stroke opacity sets how far it folds: opacity × 180°. Here, give the Mountain or Valley line a User Text entry `TargetAngleDeg` with a value from 0 to 180 (Properties panel → Attribute User Text, or the `SetUserText` command). At Fold = 1 the crease folds to that angle; lines without it fold to 180°. The example patterns already carry it. Patterns such as the crane need it: forcing their 45° and 135° creases to 180° asks for a shape that cannot exist, and the sheet tangles. The value is read through the layer pipelines on every solve, so an edit takes effect the next time the solver runs (move Fold, or run the Animate timer). Curves wired in some other way, for example internalised in a parameter, have no Rhino object to read from and fold to 180°.
+
+**Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does (`js/model.js`). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
 
 ## Constants
 
@@ -64,7 +68,8 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 | `FACE` | 0.2 | Face Stiffness | 0–5 | How strongly triangles keep their corner angles. |
 | `DAMP` | 0.45 | Damping | 0.01–0.5 | Damping ratio of the edge springs. |
 | `STEPS` | 100 | (fixed) | | Solver steps per solve. |
-| `TARGET_DEG` | 180 | (per line opacity) | | Fold angle at Fold = 1. |
+| `TARGET_DEG` | 180 | (per line opacity) | | Fold angle at Fold = 1 for lines without `TargetAngleDeg`. |
+| `MERGE_REL` | 0.005 | Vertex Merge Tolerance (3 px) | | Points closer than this × the pattern radius are merged. Never less than the document tolerance. |
 | `DEMO_WHEN_EMPTY` | 2 | | | Demo used when M, V and B are empty: 0 none, 1 single valley, 2 Miura 4×4, 3 Miura 12×12. |
 
 ## Reading the output
@@ -80,10 +85,11 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 | `frame`, `steps` | Solves and total steps since the last rebuild. |
 | `msPerSolve` | Time spent in the last solve. |
 | `meanStrain%` | Average vertex strain. |
-| `maxThetaErrDeg` | Largest gap between a mountain/valley crease's angle and its current target. |
+| `maxThetaErrDeg`, `meanThetaErrDeg` | Largest and average gap between a mountain/valley crease's angle and its current target. Patterns like the crane cannot meet every target at once: the web app's crane ends with about 87° largest and 11° average, and so does this solver. |
 | `mvSenseOk` | Mountain/valley creases bending the right way, out of the total. |
 | `meanAbsV` | Average vertex speed. Near zero means the model has settled. |
 | `finite` | False if the simulation blew up. |
+| `targets` | Mountain/valley creases per target angle at Fold = 1, mountains negative, for example `-180x50,45x8`. Use it to check that `TargetAngleDeg` was read. |
 
 ## 3D print
 
@@ -165,6 +171,8 @@ Each case starts flat. "Settle" means no point moves more than 1e-6 × the sheet
 | Miura 12×12 | 0.5 | 7.1 % | 8.9 s | 1.8 s | 2.73 % | 0.54 % |
 | Miura 12×12 | 1 | 0.004 % | 5.6 s | 0.45 s | 0 % | 0 % |
 
+These figures were measured before the main solver started scaling patterns to radius 1. Its mid-fold strain is now a little lower (Miura 4×4 at Fold 0.5: 1.82 %); the full folds are unchanged.
+
 When every crease can reach its target (a single crease, or any full fold), both give the same shape. Partway through a Miura fold they differ by about 7 % of the sheet size. The main solver lets edges stretch about five times more, so its creases get closer to their targets. Kangaroo keeps the panels nearly rigid. Kangaroo settles 4–12 times faster.
 
 ![The main solver (left) and the Kangaroo version (right), Miura 12×12 at Fold 0.5, coloured by strain](captures/kangaroo-vs-v1-miura12-fold50.jpg)
@@ -173,6 +181,7 @@ When every crease can reach its target (a single crease, or any full fold), both
 - A free sheet that is unfolded back to Fold 0 is flat but may be tilted in space, because nothing holds it in place. Toggle Reset, or add an anchor.
 - Unfolding a pattern from a full fold back to flat takes longer (about 3 s on Miura 12×12), because fully folded creases start with no leverage.
 - The Kangaroo Solver merges points closer than its Tolerance, so the builder moves the extra vertex at each cut 0.1 × the document tolerance into its own panel. That keeps the two sides of a cut apart.
+- **The Traditional Crane does not fold correctly here.** Origami Goals reads `TargetAngleDeg` and merges points the same way as the main solver, so the crane gets the same mesh and targets (its Info shows `targets=`). But Kangaroo moves straight toward the nearest balance, without momentum, and from the flat sheet that leads to a different arrangement: about 84 of the 111 mountain/valley creases end on the right side. The main solver reaches the crane, as the web app does, because its momentum and damping carry the sheet past those states. Use `OrigamiSim.gh` for the crane.
 
 ![The Kangaroo definition](captures/kangaroo-canvas.png)
 
@@ -182,6 +191,7 @@ When every crease can reach its target (a single crease, or any full fold), both
 - **Nothing folds or `build failed: no closed faces`.** Lines probably do not meet, or the Border is missing. Check them with `_Intersect` or by raising the document tolerance.
 - **My pattern is ignored and the demo shows.** Check the layer names (`Border`, `Mountain`, `Valley`, `Facet`, `Cut`, `Hinge`) and that the objects are not hidden.
 - **It folds the wrong way.** Swap the M and V inputs, or set Fold negative.
+- **A pattern that folds in the web app tangles here.** Check that its partial folds carry `TargetAngleDeg` (the `targets` field in Info lists the angles that were read), and fold it gradually: the web app's crane also tangles if Fold jumps straight from 0 to 1.
 - **It is slow.** Solve time grows with vertex count. Patterns with thousands of vertices run, but slowly.
 - **The solver component is orange.** It shows warning CS1701, a harmless .NET assembly-version notice from Rhino 8. Wires from the layer pipelines are orange while those layers are empty.
 

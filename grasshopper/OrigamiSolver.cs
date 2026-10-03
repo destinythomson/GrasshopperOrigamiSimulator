@@ -24,7 +24,9 @@
 
 // ===== SCRIPT (RunScript body) =====
 double tol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
-OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, Fold, Reset, Anchors, tol);
+List<double> MA = OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
+List<double> VA = OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
+OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, tol);
 if (r.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, r.Warning);
 Mesh = r.OutMesh;
 Strain = r.OutStrain;
@@ -42,7 +44,10 @@ static class OrigamiSim
   const double FACE = 0.2;          // faceStiffness             js/globals.js:53
   const double DAMP = 0.45;         // percentDamping (ratio)    js/globals.js:56
   const int STEPS = 100;            // solver steps per solve    js/globals.js:90
-  const double TARGET_DEG = 180.0;  // full fold; M = -180, V = +180   js/pattern.js:75,85
+  const double TARGET_DEG = 180.0;  // full fold when a line has no TargetAngleDeg; M = -180, V = +180   js/pattern.js:75,85
+  const string ANGLE_KEY = "TargetAngleDeg";   // per-line User Text = the web app's stroke opacity x 180
+  const double MERGE_REL = 0.005;   // vertices closer than this x the pattern radius are merged (web app: vertTol = 3 px,
+                                    // js/globals.js:63, about 0.5 % of a typical SVG sheet)
   const double MASS = 1.0;          // every node has mass 1     js/node.js:205
   const int DEMO_WHEN_EMPTY = 2;    // used only when M, V and B are all empty:
                                     // 0 none, 1 single valley (2 triangles), 2 Miura 4x4, 3 Miura 12x12
@@ -66,6 +71,8 @@ static class OrigamiSim
   class SimState
   {
     public ulong Key; public int Demo; public double Tol; public string Note;
+    // the simulation runs in the web app's frame (js/model.js:340-357): model point = Center + sim point / Scale
+    public Point3d Center; public double Scale;
     // nodes
     public int N; public Point3d[] Pos; public Vector3d[] Vel; public bool[] Fixed;
     public Vector3d[] Force; public double[] ErrSum; public int[] BeamCount;
@@ -85,19 +92,22 @@ static class OrigamiSim
   // ---------------------------------------------------------------------------------------------
   // Entry point (one call per Grasshopper solve)
   // ---------------------------------------------------------------------------------------------
+  // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
-                           List<Curve> H, double fold, bool reset, List<Point3d> anchors, double tol)
+                           List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     int curved = 0;
-    // polylines, rectangles and polycurves become line segments; groups[kind]
+    // polylines, rectangles and polycurves become line segments; groups[kind], angles[kind] = degrees per segment
     List<Line>[] groups = new List<Line>[NKINDS];
-    groups[KIND_M] = ToLines(M, tol, ref curved);
-    groups[KIND_V] = ToLines(V, tol, ref curved);
-    groups[KIND_B] = ToLines(B, tol, ref curved);
-    groups[KIND_F] = ToLines(F, tol, ref curved);
-    groups[KIND_C] = ToLines(C, tol, ref curved);
-    groups[KIND_H] = ToLines(H, tol, ref curved);
+    List<double>[] angles = new List<double>[NKINDS];
+    for (int g = 0; g < NKINDS; g++) angles[g] = new List<double>();
+    groups[KIND_M] = ToLines(M, MA, tol, ref curved, angles[KIND_M]);
+    groups[KIND_V] = ToLines(V, VA, tol, ref curved, angles[KIND_V]);
+    groups[KIND_B] = ToLines(B, null, tol, ref curved, angles[KIND_B]);
+    groups[KIND_F] = ToLines(F, null, tol, ref curved, angles[KIND_F]);
+    groups[KIND_C] = ToLines(C, null, tol, ref curved, angles[KIND_C]);
+    groups[KIND_H] = ToLines(H, null, tol, ref curved, angles[KIND_H]);
     int nLines = 0;
     foreach (List<Line> g in groups) nLines += g.Count;
     List<Point3d> an = anchors != null ? new List<Point3d>(anchors) : new List<Point3d>();
@@ -107,14 +117,15 @@ static class OrigamiSim
     {
       demo = DEMO_WHEN_EMPTY;
       Demo(demo, groups[KIND_M], groups[KIND_V], groups[KIND_B]);
+      for (int g = 0; g < NKINDS; g++) while (angles[g].Count < groups[g].Count) angles[g].Add(TARGET_DEG);
     }
 
-    ulong key = Hash(groups, an, tol, demo);
+    ulong key = Hash(groups, angles, an, tol, demo);
     SimState st;
     States.TryGetValue(id, out st);
     if (st == null || st.Key != key || reset)
     {
-      try { st = Build(groups, an, tol); }
+      try { st = Build(groups, angles, an, tol); }
       catch (Exception ex)
       {
         States.Remove(id);
@@ -145,30 +156,63 @@ static class OrigamiSim
     return res;
   }
 
+  // Per-curve target angle (degrees) from each referenced Rhino object's User Text TargetAngleDeg, read from
+  // the input's volatile data (same order as the curve list). Unreferenced curves and missing, unparsable or
+  // out-of-range (outside 0-180) values get TARGET_DEG. Returns null when the data does not line up with the list.
+  public static List<double> TargetAngles(IGH_Component comp, string input, List<Curve> curves, RhinoDoc doc)
+  {
+    IGH_Param p = comp.Params.Input.Find(q => q.NickName == input);
+    if (p == null || doc == null || curves == null) return null;
+    List<double> res = new List<double>();
+    foreach (Grasshopper.Kernel.Types.IGH_Goo g in p.VolatileData.AllData(false))
+    {
+      double a = TARGET_DEG;
+      Grasshopper.Kernel.Types.IGH_GeometricGoo gg = g as Grasshopper.Kernel.Types.IGH_GeometricGoo;
+      if (gg != null && gg.IsReferencedGeometry)
+      {
+        Rhino.DocObjects.RhinoObject o = doc.Objects.FindId(gg.ReferenceID);
+        string s = o != null ? o.Attributes.GetUserString(ANGLE_KEY) : null;
+        double v;
+        if (s != null && double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)
+            && v >= 0 && v <= 180) a = v;
+      }
+      res.Add(a);
+    }
+    return res.Count == curves.Count ? res : null;
+  }
+
   // Curves from Rhino (lines, polylines, rectangles, polycurves) -> straight line segments.
-  // Non-linear segments are approximated by a polyline and counted.
-  static List<Line> ToLines(List<Curve> curves, double tol, ref int approximated)
+  // Non-linear segments are approximated by a polyline and counted. Every segment gets its curve's angle
+  // (ang[i], or TARGET_DEG) in outAng.
+  static List<Line> ToLines(List<Curve> curves, List<double> ang, double tol, ref int approximated, List<double> outAng)
   {
     List<Line> lines = new List<Line>();
     if (curves == null) return lines;
-    foreach (Curve c in curves)
+    for (int i = 0; i < curves.Count; i++)
     {
-      if (c == null || !c.IsValid) continue;
-      Polyline pl;
-      if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl); continue; }
-      Curve[] segs = c.DuplicateSegments();
-      if (segs == null || segs.Length == 0) segs = new Curve[] { c };
-      foreach (Curve sg in segs)
-      {
-        if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); continue; }
-        approximated++;
-        PolylineCurve pc = sg.ToPolyline(0, 0, 0.1, 0, 0, tol, 0, 0, true);
-        Polyline p2;
-        if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2);
-        else lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd));
-      }
+      AddCurve(lines, curves[i], tol, ref approximated);
+      double a = ang != null && i < ang.Count ? ang[i] : TARGET_DEG;
+      while (outAng.Count < lines.Count) outAng.Add(a);
     }
     return lines;
+  }
+
+  static void AddCurve(List<Line> lines, Curve c, double tol, ref int approximated)
+  {
+    if (c == null || !c.IsValid) return;
+    Polyline pl;
+    if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl); return; }
+    Curve[] segs = c.DuplicateSegments();
+    if (segs == null || segs.Length == 0) segs = new Curve[] { c };
+    foreach (Curve sg in segs)
+    {
+      if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); continue; }
+      approximated++;
+      PolylineCurve pc = sg.ToPolyline(0, 0, 0.1, 0, 0, tol, 0, 0, true);
+      Polyline p2;
+      if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2);
+      else lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd));
+    }
   }
 
   static void AddPolyline(List<Line> lines, Polyline pl)
@@ -295,7 +339,7 @@ static class OrigamiSim
     {
       Point3d p = s.Pos[i];
       if (!p.IsValid) finite = false;
-      mesh.Vertices.Add(p);
+      mesh.Vertices.Add(new Point3d(s.Center.X + p.X / s.Scale, s.Center.Y + p.Y / s.Scale, s.Center.Z + p.Z / s.Scale));
       // strain = mean |L/L0 - 1| over the node's beams, in %; fixed nodes report 0 (velocityCalc shader)
       double e = (s.Fixed[i] || s.BeamCount[i] == 0) ? 0 : s.ErrSum[i] / s.BeamCount[i] * 100.0;
       strain.Add(e);
@@ -305,13 +349,19 @@ static class OrigamiSim
     for (int f = 0; f < s.NF; f++) mesh.Faces.AddFace(s.FA[f], s.FB[f], s.FC[f]);
     mesh.Normals.ComputeNormals();
 
-    double maxErr = 0; int mv = 0, mvOk = 0;
+    double maxErr = 0, sumErr = 0; int mv = 0, mvOk = 0;
+    SortedDictionary<long, int> hist = new SortedDictionary<long, int>();   // M/V creases per target in whole degrees (M < 0)
     for (int c = 0; c < s.NC; c++)
     {
       if (s.CType[c] != 1) continue;
       mv++;
+      long deg = (long)Math.Round(s.CTarget[c] * 180.0 / Math.PI);
+      int cnt;
+      hist.TryGetValue(deg, out cnt);
+      hist[deg] = cnt + 1;
       double target = s.CTarget[c] * s.Fold;
       maxErr = Math.Max(maxErr, Math.Abs(s.CTheta[c] - target));
+      sumErr += Math.Abs(s.CTheta[c] - target);
       if (target == 0 || s.CTheta[c] * target > 0) mvOk++;
     }
     double meanStrain = s.N > 0 ? sumStrain / s.N : 0;
@@ -320,10 +370,11 @@ static class OrigamiSim
     System.Globalization.CultureInfo ci = System.Globalization.CultureInfo.InvariantCulture;
     r.OutInfo = string.Format(ci,
       "nodes={0} beams={1} creases={2} mvCreases={3} faces={4} dt={5:E3} frame={6} steps={7} msPerSolve={8:F2} " +
-      "meanStrain%={9:F4} maxThetaErrDeg={10:F2} mvSenseOk={11}/{3} meanAbsV={12:E2} fold={13:F2} demo={14} finite={15}{16}",
+      "meanStrain%={9:F4} maxThetaErrDeg={10:F2} meanThetaErrDeg={18:F2} mvSenseOk={11}/{3} meanAbsV={12:E2} fold={13:F2} demo={14} finite={15} targets={17}{16}",
       s.N, s.NB, s.NC, mv, s.NF, s.Dt, s.Frames, s.Steps, ms,
       meanStrain, maxErr * 180.0 / Math.PI, mvOk, s.N > 0 ? sumV / s.N : 0, s.Fold, s.Demo,
-      finite ? "true" : "false", string.IsNullOrEmpty(s.Note) ? "" : " note=" + s.Note);
+      finite ? "true" : "false", string.IsNullOrEmpty(s.Note) ? "" : " note=" + s.Note,
+      HistText(hist), mv > 0 ? sumErr / mv * 180.0 / Math.PI : 0);
     if (!finite) r.Warning = "Simulation diverged (non-finite positions). Toggle Reset; lower AXIAL or raise DAMP.";
     r.OutMesh = mesh;
     r.OutStrain = strain;
@@ -334,16 +385,32 @@ static class OrigamiSim
   // Build: lines -> planar graph -> faces -> triangles -> nodes, beams, creases
   // (replaces pattern.js cleanup + triangulation and model.js sync)
   // ---------------------------------------------------------------------------------------------
-  static SimState Build(List<Line>[] groups, List<Point3d> anchors, double tol)
+  static SimState Build(List<Line>[] groups, List<double>[] angles, List<Point3d> anchors, double tol)
   {
     List<string> notes = new List<string>();
 
-    // 1. tagged input lines
+    // 1. tagged input lines (kind + target angle in degrees)
     List<Line> lines = new List<Line>();
     List<int> kinds = new List<int>();
-    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, groups[g], g, tol);
+    List<double> angs = new List<double>();
+    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, angs, groups[g], angles[g], g, tol);
     int n = lines.Count;
     if (n == 0) throw new Exception("no input lines longer than the document tolerance");
+
+    // 1b. web app frame (js/model.js:340-357): centre on the bounding-box centre and scale to bounding radius 1, so the
+    //     stiffness balance does not depend on the drawing units. Vertices merge within MERGE_REL of that radius.
+    BoundingBox all = BoundingBox.Empty;
+    foreach (Line ln in lines) { all.Union(ln.From); all.Union(ln.To); }
+    Point3d center = all.Center;
+    double radius = 0;
+    foreach (Line ln in lines) radius = Math.Max(radius, Math.Max(center.DistanceTo(ln.From), center.DistanceTo(ln.To)));
+    double scale = 1.0 / radius;
+    for (int i = 0; i < n; i++)
+      lines[i] = new Line(ToSim(lines[i].From, center, scale), ToSim(lines[i].To, center, scale));
+    List<Point3d> simAnchors = new List<Point3d>();
+    foreach (Point3d a in anchors) simAnchors.Add(ToSim(a, center, scale));
+    double modelTol = tol;
+    tol = Math.Max(tol * scale, MERGE_REL);
 
     // 2. split every line where another line crosses or touches it (pattern.js splits intersections)
     List<double>[] cuts = new List<double>[n];
@@ -372,10 +439,12 @@ static class OrigamiSim
       }
     }
 
-    // 3. merge vertices within tolerance, collect unique edges (M/V wins over B on duplicates)
+    // 3. merge vertices within tolerance, collect unique edges (M/V wins over B on duplicates);
+    //    every piece of a split line keeps the line's angle
     List<Point3d> verts = new List<Point3d>();
     Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>();
     Dictionary<long, int> edgeKind = new Dictionary<long, int>();
+    Dictionary<long, double> edgeAng = new Dictionary<long, double>();
     for (int i = 0; i < n; i++)
     {
       List<double> ts = cuts[i];
@@ -390,7 +459,7 @@ static class OrigamiSim
         if (u == w) continue;
         long ek = EdgeKey(u, w);
         int old;
-        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old)) edgeKind[ek] = kinds[i];
+        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old)) { edgeKind[ek] = kinds[i]; edgeAng[ek] = angs[i]; }
       }
     }
     int NV = verts.Count;
@@ -424,7 +493,7 @@ static class OrigamiSim
     if (plane.ZAxis.Z < 0) plane.Flip();
     double dev = 0;
     foreach (Point3d p in used) dev = Math.Max(dev, Math.Abs(plane.DistanceTo(p)));
-    if (dev > 10 * tol) notes.Add("notPlanar:maxDev=" + dev.ToString("G3", System.Globalization.CultureInfo.InvariantCulture));
+    if (dev > 10 * tol) notes.Add("notPlanar:maxDev=" + (dev / scale).ToString("G3", System.Globalization.CultureInfo.InvariantCulture));
     double[] X = new double[NV], Y = new double[NV];
     for (int k = 0; k < NV; k++) { double s, t; plane.ClosestParameter(verts[k], out s, out t); X[k] = s; Y[k] = t; }
 
@@ -543,15 +612,16 @@ static class OrigamiSim
     foreach (int[] tr in tris) foreach (int k in tr) if (map[k] < 0) { map[k] = nodeVerts.Count; nodeVerts.Add(k); }
 
     SimState st = new SimState();
-    st.Tol = tol;
+    st.Tol = modelTol;
+    st.Center = center; st.Scale = scale;
     int N = nodeVerts.Count;
     st.N = N;
     st.Pos = new Point3d[N]; st.Vel = new Vector3d[N]; st.Fixed = new bool[N];
     st.Force = new Vector3d[N]; st.ErrSum = new double[N]; st.BeamCount = new int[N];
     for (int i = 0; i < N; i++) st.Pos[i] = verts[nodeVerts[i]];
-    double anchorTol = Math.Max(10 * tol, 1e-9);
+    double anchorTol = Math.Max(10 * modelTol * scale, 1e-9);
     int nFixed = 0;
-    foreach (Point3d a in anchors)
+    foreach (Point3d a in simAnchors)
       for (int i = 0; i < N; i++)
         if (!st.Fixed[i] && st.Pos[i].DistanceTo(a) <= anchorTol) { st.Fixed[i] = true; nFixed++; }
     if (anchors.Count > 0) notes.Add("fixedNodes:" + nFixed);
@@ -625,7 +695,9 @@ static class OrigamiSim
       if (kind == KIND_M || kind == KIND_V)
       {
         st.CType[c] = 1;
-        st.CTarget[c] = (kind == KIND_M ? -TARGET_DEG : TARGET_DEG) * Math.PI / 180.0;
+        double deg;
+        if (!edgeAng.TryGetValue(EdgeKey(origOf[lo], origOf[hi]), out deg)) deg = TARGET_DEG;
+        st.CTarget[c] = (kind == KIND_M ? -deg : deg) * Math.PI / 180.0;
         st.CK[c] = CREASE * L0;                    // js/crease.js:44-48
       }
       else
@@ -682,6 +754,18 @@ static class OrigamiSim
   // ---------------------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------------------
+  static string HistText(SortedDictionary<long, int> hist)   // "45x18,180x83"
+  {
+    List<string> parts = new List<string>();
+    foreach (KeyValuePair<long, int> kv in hist) parts.Add(kv.Key + "x" + kv.Value);
+    return string.Join(",", parts.ToArray());
+  }
+
+  static Point3d ToSim(Point3d p, Point3d center, double scale)
+  {
+    return new Point3d((p.X - center.X) * scale, (p.Y - center.Y) * scale, (p.Z - center.Z) * scale);
+  }
+
   static double Clamp(double x) { return x < -1.0 ? -1.0 : (x > 1.0 ? 1.0 : x); }
 
   static long EdgeKey(int p, int q) { int lo = Math.Min(p, q), hi = Math.Max(p, q); return ((long)lo << 32) | (uint)hi; }
@@ -705,12 +789,13 @@ static class OrigamiSim
     throw new Exception("degenerate triangle");
   }
 
-  static void AddLines(List<Line> lines, List<int> kinds, List<Line> src, int kind, double tol)
+  static void AddLines(List<Line> lines, List<int> kinds, List<double> angs, List<Line> src, List<double> srcAng, int kind, double tol)
   {
-    foreach (Line ln in src)
+    for (int i = 0; i < src.Count; i++)
     {
+      Line ln = src[i];
       if (!ln.IsValid || ln.Length <= tol) continue;
-      lines.Add(ln); kinds.Add(kind);
+      lines.Add(ln); kinds.Add(kind); angs.Add(i < srcAng.Count ? srcAng[i] : TARGET_DEG);
     }
   }
 
@@ -831,7 +916,7 @@ static class OrigamiSim
       if (Area2(idx[0], idx[k], idx[k + 1], X, Y) > eps) tris.Add(new int[] { idx[0], idx[k], idx[k + 1] });
   }
 
-  static ulong Hash(List<Line>[] groups, List<Point3d> an, double tol, int demo)
+  static ulong Hash(List<Line>[] groups, List<double>[] angles, List<Point3d> an, double tol, int demo)
   {
     ulong h = 14695981039346656037UL;
     h = Mix(h, demo);
@@ -841,6 +926,7 @@ static class OrigamiSim
       h = Mix(h, 1000 + g);
       h = Mix(h, groups[g].Count);
       foreach (Line ln in groups[g]) { h = MixPt(h, ln.From, tol); h = MixPt(h, ln.To, tol); }
+      foreach (double a in angles[g]) h = Mix(h, BitConverter.DoubleToInt64Bits(a));
     }
     h = Mix(h, 2000 + an.Count);
     foreach (Point3d p in an) h = MixPt(h, p, tol);

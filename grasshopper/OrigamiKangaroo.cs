@@ -8,7 +8,9 @@
 //   - cut-vertex copies are offset 0.1 x document tolerance into their own triangles, because Kangaroo merges
 //     particles that sit closer than its Tolerance (v1 copies share one position);
 //   - edge-keyed dictionaries use the LongHash comparer from OrigamiPrint.cs;
-//   - instead of simulating, the component outputs geometry and OrigamiCrease goals.
+//   - instead of simulating, the component outputs geometry and OrigamiCrease goals;
+//   - it stays in model units: v1 simulates in the web app's frame (radius 1), but Kangaroo's goals already
+//     scale with edge length. Both merge vertices within the same distance (MERGE_REL x radius).
 //
 // Why a custom crease goal: Kangaroo's stock Hinge goal wraps its angle at +-180 deg and flips or stalls
 // above ~150-165 deg (probed 2026-10-03, see plans/grasshopper-kangaroo-solver.md). OrigamiCrease uses v1's
@@ -36,7 +38,9 @@ using System.Linq;
 
 // ===== SCRIPT (RunScript body) =====
 double docTol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
-OrigamiK.Result res = OrigamiK.Run(Component.InstanceGuid, M, V, B, F, C, H, Anchors, Fold, CreaseK, FacetK, docTol);
+List<double> MA = OrigamiK.TargetAngles(Component, "M", M, RhinoDocument);
+List<double> VA = OrigamiK.TargetAngles(Component, "V", V, RhinoDocument);
+OrigamiK.Result res = OrigamiK.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Anchors, Fold, CreaseK, FacetK, docTol);
 if (res.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, res.Warning);
 Edges = res.Edges;
 Creases = res.Creases;
@@ -55,7 +59,10 @@ static class OrigamiK
   // ---------------------------------------------------------------------------------------------
   // Constants
   // ---------------------------------------------------------------------------------------------
-  const double TARGET_DEG = 180.0;  // full fold; M = -180, V = +180   js/pattern.js:75,85
+  const double TARGET_DEG = 180.0;  // full fold when a line has no TargetAngleDeg; M = -180, V = +180   js/pattern.js:75,85
+  const string ANGLE_KEY = "TargetAngleDeg";   // per-line User Text = the web app's stroke opacity x 180
+  const double MERGE_REL = 0.005;   // vertices closer than this x the pattern radius are merged (web app: vertTol = 3 px,
+                                    // js/globals.js:63, about 0.5 % of a typical SVG sheet); never below the document tolerance
   const double MAXROT_DEG = 15.0;   // one crease goal asks for at most 2 x this fold-angle change per iteration
   const int DEMO_WHEN_EMPTY = 2;    // used only when every crease layer is empty:
                                     // 0 none, 1 single valley (2 triangles), 2 Miura 4x4, 3 Miura 12x12
@@ -154,6 +161,7 @@ static class OrigamiK
     public Point3d[] Pos; public List<int[]> Tris = new List<int[]>();
     public List<Line> Edges = new List<Line>();
     public List<int> Quads = new List<int>(); public List<int> Kind = new List<int>(); public List<double> L0 = new List<double>();
+    public List<double> AngDeg = new List<double>();   // per crease: target angle in degrees (M/V)
     public double LMean; public List<Point3d> AnchorPts = new List<Point3d>(); public int Hinges;
     public double Diag;
     public int FoldSign = 1;   // sign of the last nonzero Fold: which side the creases folded toward
@@ -164,20 +172,24 @@ static class OrigamiK
   // ---------------------------------------------------------------------------------------------
   // Entry point (one call per Grasshopper solve)
   // ---------------------------------------------------------------------------------------------
+  // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
-                           List<Curve> H, List<Point3d> anchors, double fold, double creaseK, double facetK, double tol)
+                           List<Curve> H, List<double> MA, List<double> VA, List<Point3d> anchors, double fold,
+                           double creaseK, double facetK, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     Result r = new Result();
     r.Tol = 0.01 * tol;
     int curved = 0;
     List<Line>[] groups = new List<Line>[NKINDS];
-    groups[KIND_M] = ToLines(M, tol, ref curved);
-    groups[KIND_V] = ToLines(V, tol, ref curved);
-    groups[KIND_B] = ToLines(B, tol, ref curved);
-    groups[KIND_F] = ToLines(F, tol, ref curved);
-    groups[KIND_C] = ToLines(C, tol, ref curved);
-    groups[KIND_H] = ToLines(H, tol, ref curved);
+    List<double>[] angles = new List<double>[NKINDS];
+    for (int g = 0; g < NKINDS; g++) angles[g] = new List<double>();
+    groups[KIND_M] = ToLines(M, MA, tol, ref curved, angles[KIND_M]);
+    groups[KIND_V] = ToLines(V, VA, tol, ref curved, angles[KIND_V]);
+    groups[KIND_B] = ToLines(B, null, tol, ref curved, angles[KIND_B]);
+    groups[KIND_F] = ToLines(F, null, tol, ref curved, angles[KIND_F]);
+    groups[KIND_C] = ToLines(C, null, tol, ref curved, angles[KIND_C]);
+    groups[KIND_H] = ToLines(H, null, tol, ref curved, angles[KIND_H]);
     int nLines = 0;
     foreach (List<Line> g in groups) nLines += g.Count;
     List<Point3d> an = anchors != null ? new List<Point3d>(anchors) : new List<Point3d>();
@@ -187,14 +199,15 @@ static class OrigamiK
     {
       demo = DEMO_WHEN_EMPTY;
       Demo(demo, groups[KIND_M], groups[KIND_V], groups[KIND_B]);
+      for (int g = 0; g < NKINDS; g++) while (angles[g].Count < groups[g].Count) angles[g].Add(TARGET_DEG);
     }
 
-    ulong key = Hash(groups, an, tol, demo);
+    ulong key = Hash(groups, angles, an, tol, demo);
     Topo t;
     Cache.TryGetValue(id, out t);
     if (t == null || t.Key != key)
     {
-      try { t = Build(groups, an, tol); }
+      try { t = Build(groups, angles, an, tol); }
       catch (Exception ex)
       {
         Cache.Remove(id);
@@ -215,11 +228,19 @@ static class OrigamiK
 
     // goals are rebuilt every solve (cheap); Kangaroo matches them to its particles by flat position
     int nc = t.Kind.Count, mv = 0;
+    SortedDictionary<long, int> hist = new SortedDictionary<long, int>();   // M/V creases per target in whole degrees (M < 0)
     for (int c = 0; c < nc; c++)
     {
       int kind = t.Kind[c];
       bool isMV = kind == KIND_M || kind == KIND_V;
-      double target = isMV ? (kind == KIND_M ? -1.0 : 1.0) * TARGET_DEG * Math.PI / 180.0 * fold : 0.0;
+      double target = isMV ? (kind == KIND_M ? -1.0 : 1.0) * t.AngDeg[c] * Math.PI / 180.0 * fold : 0.0;
+      if (isMV)
+      {
+        long deg = (long)Math.Round((kind == KIND_M ? -1.0 : 1.0) * t.AngDeg[c]);
+        int cnt;
+        hist.TryGetValue(deg, out cnt);
+        hist[deg] = cnt + 1;
+      }
       double k = (isMV ? creaseK : facetK) * t.L0[c] / t.LMean;   // v1: k = stiffness x length (js/crease.js:44-48)
       int i3 = t.Quads[4 * c], i4 = t.Quads[4 * c + 1], i1 = t.Quads[4 * c + 2], i2 = t.Quads[4 * c + 3];
       int side = isMV ? (kind == KIND_M ? -1 : 1) * t.FoldSign : 0;
@@ -241,38 +262,71 @@ static class OrigamiK
 
     System.Globalization.CultureInfo ci = System.Globalization.CultureInfo.InvariantCulture;
     r.Info = string.Format(ci,
-      "nodes={0} edges={1} faces={2} creases={3} mvCreases={4} anchors={5} fold={6:F2} creaseK={7:G4} facetK={8:G4} tol={9:E2} thr={10:E2} demo={11}{12}",
+      "nodes={0} edges={1} faces={2} creases={3} mvCreases={4} anchors={5} fold={6:F2} creaseK={7:G4} facetK={8:G4} tol={9:E2} thr={10:E2} demo={11} targets={13}{12}",
       t.Pos.Length, t.Edges.Count, t.Tris.Count, nc, mv, t.AnchorPts.Count, fold, creaseK, facetK, r.Tol, r.Thr, t.Demo,
-      string.IsNullOrEmpty(t.Note) ? "" : " note=" + t.Note);
+      string.IsNullOrEmpty(t.Note) ? "" : " note=" + t.Note, HistText(hist));
     if (curved > 0)
       r.Warning = curved + " curved segment(s) were approximated with straight lines (curved creases are not simulated as curves).";
     return r;
   }
 
+  // Per-curve target angle (degrees) from each referenced Rhino object's User Text TargetAngleDeg, read from
+  // the input's volatile data (same order as the curve list). Unreferenced curves and missing, unparsable or
+  // out-of-range (outside 0-180) values get TARGET_DEG. Returns null when the data does not line up with the list.
+  public static List<double> TargetAngles(IGH_Component comp, string input, List<Curve> curves, RhinoDoc doc)
+  {
+    IGH_Param p = comp.Params.Input.Find(q => q.NickName == input);
+    if (p == null || doc == null || curves == null) return null;
+    List<double> res = new List<double>();
+    foreach (Grasshopper.Kernel.Types.IGH_Goo g in p.VolatileData.AllData(false))
+    {
+      double a = TARGET_DEG;
+      Grasshopper.Kernel.Types.IGH_GeometricGoo gg = g as Grasshopper.Kernel.Types.IGH_GeometricGoo;
+      if (gg != null && gg.IsReferencedGeometry)
+      {
+        Rhino.DocObjects.RhinoObject o = doc.Objects.FindId(gg.ReferenceID);
+        string s = o != null ? o.Attributes.GetUserString(ANGLE_KEY) : null;
+        double v;
+        if (s != null && double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)
+            && v >= 0 && v <= 180) a = v;
+      }
+      res.Add(a);
+    }
+    return res.Count == curves.Count ? res : null;
+  }
+
   // Curves from Rhino (lines, polylines, rectangles, polycurves) -> straight line segments.
-  // Non-linear segments are approximated by a polyline and counted.
-  static List<Line> ToLines(List<Curve> curves, double tol, ref int approximated)
+  // Non-linear segments are approximated by a polyline and counted. Every segment gets its curve's angle
+  // (ang[i], or TARGET_DEG) in outAng.
+  static List<Line> ToLines(List<Curve> curves, List<double> ang, double tol, ref int approximated, List<double> outAng)
   {
     List<Line> lines = new List<Line>();
     if (curves == null) return lines;
-    foreach (Curve c in curves)
+    for (int i = 0; i < curves.Count; i++)
     {
-      if (c == null || !c.IsValid) continue;
-      Polyline pl;
-      if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl); continue; }
-      Curve[] segs = c.DuplicateSegments();
-      if (segs == null || segs.Length == 0) segs = new Curve[] { c };
-      foreach (Curve sg in segs)
-      {
-        if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); continue; }
-        approximated++;
-        PolylineCurve pc = sg.ToPolyline(0, 0, 0.1, 0, 0, tol, 0, 0, true);
-        Polyline p2;
-        if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2);
-        else lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd));
-      }
+      AddCurve(lines, curves[i], tol, ref approximated);
+      double a = ang != null && i < ang.Count ? ang[i] : TARGET_DEG;
+      while (outAng.Count < lines.Count) outAng.Add(a);
     }
     return lines;
+  }
+
+  static void AddCurve(List<Line> lines, Curve c, double tol, ref int approximated)
+  {
+    if (c == null || !c.IsValid) return;
+    Polyline pl;
+    if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl); return; }
+    Curve[] segs = c.DuplicateSegments();
+    if (segs == null || segs.Length == 0) segs = new Curve[] { c };
+    foreach (Curve sg in segs)
+    {
+      if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); continue; }
+      approximated++;
+      PolylineCurve pc = sg.ToPolyline(0, 0, 0.1, 0, 0, tol, 0, 0, true);
+      Polyline p2;
+      if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2);
+      else lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd));
+    }
   }
 
   static void AddPolyline(List<Line> lines, Polyline pl)
@@ -284,16 +338,26 @@ static class OrigamiK
   // Build: lines -> planar graph -> faces -> triangles -> nodes, beams, creases
   // (replaces pattern.js cleanup + triangulation and model.js sync). Copied from OrigamiSolver.cs.
   // ---------------------------------------------------------------------------------------------
-  static Topo Build(List<Line>[] groups, List<Point3d> anchors, double tol)
+  static Topo Build(List<Line>[] groups, List<double>[] angles, List<Point3d> anchors, double tol)
   {
     List<string> notes = new List<string>();
 
-    // 1. tagged input lines
+    // 1. tagged input lines (kind + target angle in degrees)
     List<Line> lines = new List<Line>();
     List<int> kinds = new List<int>();
-    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, groups[g], g, tol);
+    List<double> angs = new List<double>();
+    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, angs, groups[g], angles[g], g, tol);
     int n = lines.Count;
     if (n == 0) throw new Exception("no input lines longer than the document tolerance");
+
+    // 1b. merge distance relative to the pattern size, as v1 (radius = largest distance from the bounding-box
+    //     centre, js/model.js:340-357). Cut offsets and anchor snapping keep the document tolerance.
+    BoundingBox all = BoundingBox.Empty;
+    foreach (Line ln in lines) { all.Union(ln.From); all.Union(ln.To); }
+    double radius = 0;
+    foreach (Line ln in lines) radius = Math.Max(radius, Math.Max(all.Center.DistanceTo(ln.From), all.Center.DistanceTo(ln.To)));
+    double docTol = tol;
+    tol = Math.Max(docTol, MERGE_REL * radius);
 
     // 2. split every line where another line crosses or touches it (pattern.js splits intersections)
     List<double>[] cuts = new List<double>[n];
@@ -322,10 +386,12 @@ static class OrigamiK
       }
     }
 
-    // 3. merge vertices within tolerance, collect unique edges (M/V wins over B on duplicates)
+    // 3. merge vertices within tolerance, collect unique edges (M/V wins over B on duplicates);
+    //    every piece of a split line keeps the line's angle
     List<Point3d> verts = new List<Point3d>();
     Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>();
     Dictionary<long, int> edgeKind = new Dictionary<long, int>(new LongHash());
+    Dictionary<long, double> edgeAng = new Dictionary<long, double>(new LongHash());
     for (int i = 0; i < n; i++)
     {
       List<double> ts = cuts[i];
@@ -340,7 +406,7 @@ static class OrigamiK
         if (u == w) continue;
         long ek = EdgeKey(u, w);
         int old;
-        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old)) edgeKind[ek] = kinds[i];
+        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old)) { edgeKind[ek] = kinds[i]; edgeAng[ek] = angs[i]; }
       }
     }
     int NV = verts.Count;
@@ -466,7 +532,7 @@ static class OrigamiK
       notes.Add("cutEdges:" + cutKeys.Count + ",cutVertexCopies:" + copies);
       // Kangaroo merges particles closer than its Tolerance (0.01 x tol). Move each copy 0.1 x tol toward the
       // centroid of its own triangles so it stays a separate particle; v1 keeps copies at the same position.
-      double cutOffset = 0.1 * tol;
+      double cutOffset = 0.1 * docTol;
       for (int vc = NV; vc < verts.Count; vc++)
       {
         Point3d cen = Point3d.Origin; int cnt = 0;
@@ -515,7 +581,7 @@ static class OrigamiK
     topo.Diag = bb.Diagonal.Length;
 
     // anchors snap to every node within 10 x tolerance (v1 fixes the same nodes)
-    double anchorTol = Math.Max(10 * tol, 1e-9);
+    double anchorTol = Math.Max(10 * docTol, 1e-9);
     for (int i = 0; i < N; i++)
       foreach (Point3d a in anchors)
         if (topo.Pos[i].DistanceTo(a) <= anchorTol) { topo.AnchorPts.Add(topo.Pos[i]); break; }
@@ -546,6 +612,8 @@ static class OrigamiK
       topo.Quads.Add(map[Third(tris[f1], lo, hi)]);
       topo.Quads.Add(map[Third(tris[f2], lo, hi)]);
       topo.Kind.Add(KindOf(ek, edgeKind, origOf));
+      double deg;
+      topo.AngDeg.Add(edgeAng.TryGetValue(EdgeKey(origOf[lo], origOf[hi]), out deg) ? deg : TARGET_DEG);
       double L0 = topo.Pos[map[lo]].DistanceTo(topo.Pos[map[hi]]);
       topo.L0.Add(L0);
       sumL += L0;
@@ -604,6 +672,13 @@ static class OrigamiK
     public int GetHashCode(long x) { unchecked { ulong z = (ulong)x * 0x9E3779B97F4A7C15UL; z ^= z >> 31; return (int)(z ^ (z >> 32)); } }
   }
 
+  static string HistText(SortedDictionary<long, int> hist)   // "-180x50,45x8"
+  {
+    List<string> parts = new List<string>();
+    foreach (KeyValuePair<long, int> kv in hist) parts.Add(kv.Key + "x" + kv.Value);
+    return string.Join(",", parts.ToArray());
+  }
+
   static double Clamp(double x) { return x < -1.0 ? -1.0 : (x > 1.0 ? 1.0 : x); }
 
   static long EdgeKey(int p, int q) { int lo = Math.Min(p, q), hi = Math.Max(p, q); return ((long)lo << 32) | (uint)hi; }
@@ -627,12 +702,13 @@ static class OrigamiK
     throw new Exception("degenerate triangle");
   }
 
-  static void AddLines(List<Line> lines, List<int> kinds, List<Line> src, int kind, double tol)
+  static void AddLines(List<Line> lines, List<int> kinds, List<double> angs, List<Line> src, List<double> srcAng, int kind, double tol)
   {
-    foreach (Line ln in src)
+    for (int i = 0; i < src.Count; i++)
     {
+      Line ln = src[i];
       if (!ln.IsValid || ln.Length <= tol) continue;
-      lines.Add(ln); kinds.Add(kind);
+      lines.Add(ln); kinds.Add(kind); angs.Add(i < srcAng.Count ? srcAng[i] : TARGET_DEG);
     }
   }
 
@@ -753,7 +829,7 @@ static class OrigamiK
       if (Area2(idx[0], idx[k], idx[k + 1], X, Y) > eps) tris.Add(new int[] { idx[0], idx[k], idx[k + 1] });
   }
 
-  static ulong Hash(List<Line>[] groups, List<Point3d> an, double tol, int demo)
+  static ulong Hash(List<Line>[] groups, List<double>[] angles, List<Point3d> an, double tol, int demo)
   {
     ulong h = 14695981039346656037UL;
     h = Mix(h, demo);
@@ -763,6 +839,7 @@ static class OrigamiK
       h = Mix(h, 1000 + g);
       h = Mix(h, groups[g].Count);
       foreach (Line ln in groups[g]) { h = MixPt(h, ln.From, tol); h = MixPt(h, ln.To, tol); }
+      foreach (double a in angles[g]) h = Mix(h, BitConverter.DoubleToInt64Bits(a));
     }
     h = Mix(h, 2000 + an.Count);
     foreach (Point3d p in an) h = MixPt(h, p, tol);
