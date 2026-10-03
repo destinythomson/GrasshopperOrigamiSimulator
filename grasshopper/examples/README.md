@@ -11,10 +11,12 @@ Each crease type has its own layer. The colours match the web app's SVG conventi
 | Mountain | red | `M` |
 | Valley | blue | `V` |
 | Border | black | `B` |
-| Facet | yellow | `B` (a flat crease) |
-| Cut | green | not supported by the solver |
-| Hinge | magenta | not supported (an undriven crease) |
-| Labels | grey | none |
+| Facet | yellow | `F` (a flat crease held at 0° with the facet stiffness) |
+| Cut | green | `C` (the sheet is split along it) |
+| Hinge | magenta | `H` (an edge with no fold spring) |
+| Labels | grey | none (ignored) |
+
+These match the layer table in [`grasshopper/README.md`](../README.md#use-your-own-crease-pattern).
 
 Each pattern is a Rhino group named after the pattern. Every line carries these User Text keys: `Pattern`, `CreaseType`, `TargetAngleDeg` and `Source`. `TargetAngleDeg` is 180 × the SVG stroke opacity. The solver currently uses one fixed angle, so partial-angle creases (for example in the crane) fold to 180°.
 
@@ -35,9 +37,12 @@ Each pattern is a Rhino group named after the pattern. Every line carries these 
 
 ## Using one with `OrigamiSim.gh`
 
-1. Turn off every layer except **Mountain**.
-2. Right-click the `M` Line parameter, choose **Set Multiple Lines**, and window-select the pattern you want.
-3. Repeat with only **Valley** on for `V`, then with **Border** and **Facet** on for `B`.
+Both definitions read the crease layers directly through Geometry Pipelines (`*Mountain`, `*Valley` and so on), so there is nothing to set by hand.
+
+1. Open `OrigamiExamples.3dm` (or import it into your model) and open `OrigamiSim.gh`.
+2. Hide every object that is not part of the pattern you want, for example select its group, invert the selection and run `Hide`. Pipelines ignore hidden objects, so only the visible pattern is simulated.
+
+`OrigamiSim_Kangaroo.gh` reads the same layers, so the same steps work with it.
 
 ## Regenerating
 

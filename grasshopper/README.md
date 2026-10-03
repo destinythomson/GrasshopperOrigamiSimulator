@@ -150,7 +150,7 @@ Kangaroo has no masses, time step or damping. Every constraint is a *goal*, a po
 
 Only the ratios between strengths matter. With Crease and Facet at 1 the edges stretch a little less, but a large pattern takes about twice as long to settle.
 
-**Readout Info** reports `iterations`, `meanStrain%`, `maxStrain%`, `maxThetaErrDeg` (mountain/valley creases), `maxFacetDeg` (bending of flat creases), `mvSenseOk` and `finite`. `settled=true` means every mountain/valley crease is within 0.5° of its target. Partway through a fold, a pattern like the Miura cannot meet every target at once, so it can be still while `settled` is false.
+**Readout Info** reports `iterations`, `meanStrain%`, `maxStrain%`, `maxThetaErrDeg` (mountain/valley creases), `maxFacetDeg` (bending of flat creases), `mvSenseOk` and `finite`. `mvSenseOk` counts mountain/valley creases on their own side and not folded more than 5° past flat-folded; a crease that swings to the wrong side or folds through itself fails it. `settled=true` means every mountain/valley crease is within 0.5° of its target. Partway through a fold, a pattern like the Miura cannot meet every target at once, so it can be still while `settled` is false.
 
 ### Compared with the main definition
 

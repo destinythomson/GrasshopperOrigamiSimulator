@@ -2,7 +2,8 @@
 // Grasshopper (Rhino 8) legacy "C# Script" component source: the "Origami Readout" of the Kangaroo2 version
 // (grasshopper/OrigamiSim_Kangaroo.gh). It takes the folded mesh out of the Kangaroo Solver's O output and
 // measures it the way v1 does (OrigamiSolver.cs Output): per-vertex strain and the fold angle of every
-// crease. It works only from geometry, so it checks the goals rather than trusting them.
+// crease. It works only from geometry, so it checks the goals rather than trusting them. M/V fold angles are
+// read in the crease goal's side window, with the side taken from the sign of the target.
 // Split on the "// ===== " markers like OrigamiSolver.cs.
 //
 // Component inputs : O (tree, Kangaroo Solver output), Flat (Mesh, from Origami Goals), Quads (List<int>),
@@ -25,6 +26,7 @@ static class OrigamiReadout
 {
   const double SETTLED_DEG = 0.5;      // "settled" when every M/V crease is this close to its target...
   const double SETTLED_STRAIN = 0.5;   // ...and the mean strain (%) is below this
+  const double SENSE_SLACK_DEG = 5.0;  // mvSenseOk allows this much overshoot past a full fold
 
   public class Result
   {
@@ -98,16 +100,24 @@ static class OrigamiReadout
       Vector3d n2 = Vector3d.CrossProduct(x3 - x4, x2 - x4); n2.Unitize();
       double th = Math.Atan2(Vector3d.CrossProduct(n1, cu) * n2, n1 * n2);
       double target = targets[c];
-      double d = th - target;                       // wrapped error: -179.9 deg counts as 0.1 from +180
+      int side = Math.Sign(target);                 // = the goal's Side whenever target != 0 (OrigamiKangaroo.cs Run)
+      if (types[c] == 1 && side != 0)
+      {
+        // read theta in the goal's side window (OrigamiCrease.Calculate): valley (-90, 270], mountain [-270, 90)
+        // deg. A crease on the wrong side, or folded through itself, lands outside (0, 180 + 5] deg and fails.
+        double thu = th;
+        if (side > 0) { if (thu <= -0.5 * Math.PI) thu += 2.0 * Math.PI; }
+        else { if (thu >= 0.5 * Math.PI) thu -= 2.0 * Math.PI; }
+        mv++;
+        maxErr = Math.Max(maxErr, Math.Abs(target - thu));
+        double s = side * thu;
+        if (s > 0 && s <= Math.PI + SENSE_SLACK_DEG * Math.PI / 180.0) mvOk++;
+        continue;
+      }
+      double d = th - target;                       // flat target: wrapped error, -179.9 deg counts as 0.1 from +180
       while (d > Math.PI) d -= 2.0 * Math.PI;
       while (d < -Math.PI) d += 2.0 * Math.PI;
-      if (types[c] == 1)
-      {
-        mv++;
-        maxErr = Math.Max(maxErr, Math.Abs(d));
-        double unwrapped = target + d;
-        if (target == 0 || unwrapped * target > 0) mvOk++;
-      }
+      if (types[c] == 1) { mv++; mvOk++; maxErr = Math.Max(maxErr, Math.Abs(d)); }   // Fold 0: no side to check
       else maxFacet = Math.Max(maxFacet, Math.Abs(d));
     }
 

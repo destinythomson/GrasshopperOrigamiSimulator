@@ -146,7 +146,7 @@ Weights: M/V `k = CreaseK · L0 / L_mean`; F and triangulation diagonals `k = Fa
 - **Mesh:** the first `GH_Mesh` in O whose vertex count equals Flat's.
 - **Strain:** per vertex, mean over its edges of |L/L0 − 1| × 100, as in v1.
 - **θ per crease:** v1 formula with the face normals as in the crease spec.
-- **Info keys:** `iterations`, `meanStrain%`, `maxStrain%`, `maxThetaErrDeg` (M/V only), `maxFacetDeg`, `mvSenseOk n/N`, `finite`.
+- **Info keys:** `iterations`, `meanStrain%`, `maxStrain%`, `maxThetaErrDeg` (M/V only), `maxFacetDeg`, `mvSenseOk n/N`, `finite`. (Review fix #3: M/V θ is read in the goal's side window, side = sign(target); see checklist 7.)
 
 ### Canvas spec
 Start from `grasshopper/OrigamiSim.gh` opened in the slot (`Instances.DocumentServer.AddDocument(path, true)`). v1 on disk is never overwritten.
@@ -237,6 +237,20 @@ medium — the formulas, Guids, ports and harness are fixed here, and each chunk
   - v2 settles 4–12× faster.
   - Captures: `grasshopper/captures/kangaroo-canvas.png`, `kangaroo-vs-v1-miura12-fold50.jpg` (strain-coloured, Grasshopper preview disabled during capture).
   - README: Files table, "Kangaroo version" section, "How it was built" line.
+- [x] 7 · Review fixes (code-review Spec #1, #3, #8, #9, #10; record `plans/review-fixes.md`). Verified 2026-10-03, main slot `aardvark`, reopen slot `armadillo`:
+  - **#1:** builder Info adds `cutOffset:` when a cut makes copies. Cut-layer test (doc tol 0.01, Fold 0.5): `nodes=13`, `cutVertexCopies:1`, `cutOffset:0.001`; the (0,1) copies are 0.001 apart flat and 1.9985 apart folded; 2/2 sense, settled.
+  - **#3:** the Readout reads M/V θ in the goal's side window, with the side = sign(target) (equal to the goal's `Side` whenever target ≠ 0), so no `Sides` param was added. Sense OK iff target = 0 or 0 < side·θu ≤ 185°. Demos still pass: 1 @ Fold 1 → 1/1, err 0.00°; 2 @ Fold 1 → 24/24; 3 @ Fold 0.8 → 264/264. Hand-made demo-1 meshes, new vs old Readout:
+
+    | θ | Target | New | Old |
+    |---|---|---|---|
+    | −30° | +180° | 0/1 | 1/1 |
+    | +30° | +180° | 1/1 | 1/1 |
+    | −170° (= 190°) | +180° | 0/1 | 1/1 |
+    | +170° | +180° | 1/1 | 1/1 |
+    | −120° | +90° | 0/1 | 1/1 |
+    | +120° | +90° | 1/1 | 1/1 |
+  - **#8, #9, #10:** Execution note 5 defaults line; builder header (side windows); `examples/README.md` layer table and pipeline usage.
+  - Re-saved `OrigamiSim_Kangaroo.gh` (22,080 bytes) with DEMO 2 and Fold 0.6. Reopened: 0 errors (CS1701 only), 7 groups, sliders 0.6/3/3/100/1000, injected sources equal the `.cs` sections, O wired. v1 `OrigamiSim.gh` unmodified.
 
 ### Execution notes (new findings)
 1. **The Anchor component outputs a null goal when it has no points**, and the Solver throws "Offset and length were out of bounds".
@@ -265,6 +279,6 @@ medium — the formulas, Guids, ports and harness are fixed here, and each chunk
    | Crease = Facet = 3 | 470 ms | mean strain 0.22 % |
    | Crease = Facet = 10 | 570 ms | mean strain 0.73 % |
 
-   Defaults stay at 1.
+   Defaults were later raised to 3: see checklist 3 (the canvas run at 1/1 took 1,073 ms).
 6. A free sheet that unfolds back to Fold 0 is flat (θ ≤ 0.01°) but may sit **rotated in space** (bbox z 0.14–0.24 on Miura 12×12). Nothing pins it; v1 behaves the same way. Reset restores the original placement.
 7. Reset held true keeps the sheet flat at its start position (bbox z = 0, iterations 0). Releasing it at Fold 1 refolds Miura 12×12 in 679 ms.

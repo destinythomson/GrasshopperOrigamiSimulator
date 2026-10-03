@@ -12,8 +12,8 @@
 //
 // Why a custom crease goal: Kangaroo's stock Hinge goal wraps its angle at +-180 deg and flips or stalls
 // above ~150-165 deg (probed 2026-10-03, see plans/grasshopper-kangaroo-solver.md). OrigamiCrease uses v1's
-// fold-angle formula (thetaCalcShader), an error wrapped to [-180, 180] deg so it never pushes the wrong way
-// near a full fold, and v1's crease-force directions as its moves.
+// fold-angle formula (thetaCalcShader) read in a window on its own side (valley (-90, 270], mountain [-270, 90)
+// deg; flat creases wrap to +-180) so it never pushes the wrong way near a full fold, and v1's crease forces.
 //
 // The component's ScriptSource.References must include
 //   C:\Program Files\Rhino 8\Plug-ins\Grasshopper\Components\KangarooSolver.dll
@@ -476,6 +476,7 @@ static class OrigamiK
         Vector3d dir = cen / cnt - verts[vc];
         if (dir.Unitize()) verts[vc] = verts[vc] + dir * cutOffset;
       }
+      if (copies > 0) notes.Add("cutOffset:" + cutOffset.ToString("G3", System.Globalization.CultureInfo.InvariantCulture));
     }
     NV = verts.Count;
 
