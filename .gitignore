@@ -5,3 +5,5 @@ todo.rtf
 
 CreasePatternScripts/**/*.pdf
 CreasePatternScripts/**/*.svg
+# Rhino lock files
+*.rhl
