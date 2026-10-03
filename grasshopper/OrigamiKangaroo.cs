@@ -8,14 +8,21 @@
 //   - cut-vertex copies are offset 0.1 x document tolerance into their own triangles, because Kangaroo merges
 //     particles that sit closer than its Tolerance (v1 copies share one position);
 //   - edge-keyed dictionaries use the LongHash comparer from OrigamiPrint.cs;
-//   - instead of simulating, the component outputs geometry and OrigamiCrease goals;
-//   - it stays in model units: v1 simulates in the web app's frame (radius 1), but Kangaroo's goals already
-//     scale with edge length. Both merge vertices within the same distance (MERGE_REL x radius).
+//   - instead of simulating, the component outputs geometry and OrigamiCrease / OrigamiCorner goals;
+//   - it stays in model units: v1 simulates in the web app's frame (radius 1). Both merge vertices within the
+//     same distance (MERGE_REL x radius), and the goal weights below are scale-free.
 //
 // Why a custom crease goal: Kangaroo's stock Hinge goal wraps its angle at +-180 deg and flips or stalls
 // above ~150-165 deg (probed 2026-10-03, see plans/grasshopper-kangaroo-solver.md). OrigamiCrease uses v1's
 // fold-angle formula (thetaCalcShader) read in a window on its own side (valley (-90, 270], mountain [-270, 90)
 // deg; flat creases wrap to +-180) so it never pushes the wrong way near a full fold, and v1's crease forces.
+//
+// Goal weights reproduce v1's (the web app's) energy, so Kangaroo settles where v1 does. A goal that moves its
+// points by -r grad(r) / |grad r|^2 with weight w acts like a spring of stiffness w / |grad r|^2 on r, so
+// every goal gets w = k |grad r|^2 with v1's stiffness k: edges AXIAL / L0, creases CREASE or FACET x L0,
+// triangle corner angles FACE (js/globals.js:50-53). Without this, crease strength scaled with the square of
+// the wing heights, short-winged creases went limp, and the Traditional Crane folded into a tangle
+// (plans/crane-kangaroo-fix.md).
 //
 // The component's ScriptSource.References must include
 //   C:\Program Files\Rhino 8\Plug-ins\Grasshopper\Components\KangarooSolver.dll
@@ -24,9 +31,11 @@
 //   USING -> UsingCode, SCRIPT -> ScriptCode (RunScript body), ADDITIONAL -> AdditionalCode.
 //
 // Component inputs : M, V, B, F, C, H (List<Curve>), Anchors (List<Point3d>), Fold (double),
-//                    CreaseK (double, M/V crease strength), FacetK (double, flat crease strength)
-// Component outputs: Edges (List<Line>, every mesh edge, flat)  -> Kangaroo Length(Line)
-//                    Creases (List of OrigamiCrease goals)        -> Kangaroo Solver
+//                    CreaseK (double, M/V crease strength), FacetK (double, flat crease strength): x v1's,
+//                    EdgeK (double, mean edge strength; at EDGE_REF the balance is v1's)
+// Component outputs: Edges (List<Line>, every mesh edge, flat)  -> Kangaroo Length(Line) Line
+//                    EdgeW (List<double>, per-edge strength)      -> Kangaroo Length(Line) Strength
+//                    Creases (OrigamiCrease + OrigamiCorner goals) -> Kangaroo Solver
 //                    Flat (Mesh, flat triangle mesh)              -> Kangaroo Show, Readout
 //                    AnchorPts (List<Point3d>, snapped to nodes)  -> Kangaroo Anchor
 //                    Quads (List<int>, 4 per crease: lo, hi, wing1, wing2), Targets (List<double>, rad),
@@ -40,9 +49,10 @@ using System.Linq;
 double docTol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
 List<double> MA = OrigamiK.TargetAngles(Component, "M", M, RhinoDocument);
 List<double> VA = OrigamiK.TargetAngles(Component, "V", V, RhinoDocument);
-OrigamiK.Result res = OrigamiK.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Anchors, Fold, CreaseK, FacetK, docTol);
+OrigamiK.Result res = OrigamiK.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Anchors, Fold, CreaseK, FacetK, EdgeK, docTol);
 if (res.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, res.Warning);
 Edges = res.Edges;
+EdgeW = res.EdgeW;
 Creases = res.Creases;
 Flat = res.Flat;
 AnchorPts = res.AnchorPts;
@@ -63,7 +73,13 @@ static class OrigamiK
   const string ANGLE_KEY = "TargetAngleDeg";   // per-line User Text = the web app's stroke opacity x 180
   const double MERGE_REL = 0.005;   // vertices closer than this x the pattern radius are merged (web app: vertTol = 3 px,
                                     // js/globals.js:63, about 0.5 % of a typical SVG sheet); never below the document tolerance
-  const double MAXROT_DEG = 15.0;   // one crease goal asks for at most 2 x this fold-angle change per iteration
+  const double AXIAL = 20.0;        // v1 / web app stiffnesses: axialStiffness   js/globals.js:50
+  const double CREASE = 0.7;        // creaseStiffness (M, V)                     js/globals.js:51
+  const double FACET = 0.7;         // panelStiffness (flat creases)              js/globals.js:52
+  const double FACE = 0.2;          // faceStiffness (triangle corner angles)     js/globals.js:53
+  const double EDGE_REF = 100.0;    // Edge Strength at which edges, creases and faces balance as in v1
+  const double MAXROT_DEG = 90.0;   // one crease goal asks for at most 2 x this fold-angle change per iteration.
+                                    // A tighter cap (15) weakens far-off creases against the rest and tangles the crane
   const int DEMO_WHEN_EMPTY = 2;    // used only when every crease layer is empty:
                                     // 0 none, 1 single valley (2 triangles), 2 Miura 4x4, 3 Miura 12x12
 
@@ -83,14 +99,16 @@ static class OrigamiK
     public double Target;   // radians, + valley, - mountain
     public int Side;        // +1 folds on the valley side, -1 on the mountain side, 0 = flat crease
     readonly double maxRot;
+    readonly double k;      // stiffness of the fold angle (v1: crease stiffness x length)
 
     public OrigamiCrease(Point3d e3, Point3d e4, Point3d w1, Point3d w2, double target, int side, double k)
     {
       PPos = new Point3d[] { e3, e4, w1, w2 };
       Move = new Vector3d[4];
-      Weighting = new double[] { k, k, k, k };
+      Weighting = new double[] { k, k, k, k };   // replaced by k x |grad theta|^2 in Calculate
       Target = target;
       Side = side;
+      this.k = k;
       maxRot = MAXROT_DEG * Math.PI / 180.0;
     }
 
@@ -135,15 +153,59 @@ static class OrigamiK
       Vector3d g4 = -(g1 * c1 + g2 * c2);
       double gg = g1.SquareLength + g2.SquareLength + g3.SquareLength + g4.SquareLength;
       if (gg < 1e-30) return;
-      // smallest move that changes theta by d to first order (one Gauss-Newton step)
+      // smallest move that changes theta by d to first order (one Gauss-Newton step), weighted so the goal is a
+      // spring of stiffness k on theta whatever the wing heights
       double s = d / gg;
       Move[0] = g3 * s; Move[1] = g4 * s; Move[2] = g1 * s; Move[3] = g2 * s;
+      for (int i = 0; i < 4; i++) Weighting[i] = k * gg;
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // One corner angle of a triangle held at its flat value (v1 face springs, velocityCalc shader face loop).
+  // Particles: 0 = the corner, 1 and 2 = the other two corners of the triangle.
+  // ---------------------------------------------------------------------------------------------
+  public class OrigamiCorner : KangarooSolver.GoalObject
+  {
+    readonly double rest, k;
+
+    public OrigamiCorner(Point3d a, Point3d b, Point3d c, double k)
+    {
+      PPos = new Point3d[] { a, b, c };
+      Move = new Vector3d[3];
+      Weighting = new double[] { k, k, k };   // replaced by k x |grad angle|^2 in Calculate
+      this.k = k;
+      Vector3d u = b - a, v = c - a;
+      u.Unitize(); v.Unitize();
+      rest = Math.Acos(Clamp(u * v));
+    }
+
+    public override void Calculate(List<KangarooSolver.Particle> p)
+    {
+      Point3d a = p[PIndex[0]].Position, b = p[PIndex[1]].Position, c = p[PIndex[2]].Position;
+      for (int i = 0; i < 3; i++) Move[i] = Vector3d.Zero;
+      Vector3d ab = b - a, ac = c - a;
+      double lab = ab.Length, lac = ac.Length;
+      if (lab < 1e-12 || lac < 1e-12) return;
+      Vector3d n = Vector3d.CrossProduct(ab, ac);
+      if (n.Length < 1e-15) return;
+      n.Unitize(); ab /= lab; ac /= lac;
+      double angle = Math.Acos(Clamp(ab * ac));
+      // gradient of the angle with respect to the three points (directions of v1's face forces)
+      Vector3d nAB = Vector3d.CrossProduct(n, ab) / lab, nAC = Vector3d.CrossProduct(n, ac) / lac;
+      Vector3d ga = nAB - nAC, gb = -nAB, gc = nAC;
+      double gg = ga.SquareLength + gb.SquareLength + gc.SquareLength;
+      if (gg < 1e-30) return;
+      double s = (rest - angle) / gg;
+      Move[0] = ga * s; Move[1] = gb * s; Move[2] = gc * s;
+      for (int i = 0; i < 3; i++) Weighting[i] = k * gg;
     }
   }
 
   public class Result
   {
     public List<Line> Edges = new List<Line>();
+    public List<double> EdgeW = new List<double>();
     public List<object> Creases = new List<object>();
     public Rhino.Geometry.Mesh Flat;
     public List<Point3d> AnchorPts = new List<Point3d>();
@@ -162,8 +224,10 @@ static class OrigamiK
     public List<Line> Edges = new List<Line>();
     public List<int> Quads = new List<int>(); public List<int> Kind = new List<int>(); public List<double> L0 = new List<double>();
     public List<double> AngDeg = new List<double>();   // per crease: target angle in degrees (M/V)
-    public double LMean; public List<Point3d> AnchorPts = new List<Point3d>(); public int Hinges;
+    public List<Point3d> AnchorPts = new List<Point3d>(); public int Hinges;
     public double Diag;
+    public double Radius;      // largest node distance from the bounding-box centre (v1 scales this to 1)
+    public double Unit;        // weight per unit of v1 stiffness: EDGE_REF / mean edge stiffness (2 AXIAL / L0)
     public int FoldSign = 1;   // sign of the last nonzero Fold: which side the creases folded toward
   }
 
@@ -175,7 +239,7 @@ static class OrigamiK
   // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
                            List<Curve> H, List<double> MA, List<double> VA, List<Point3d> anchors, double fold,
-                           double creaseK, double facetK, double tol)
+                           double creaseK, double facetK, double edgeK, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     Result r = new Result();
@@ -225,6 +289,11 @@ static class OrigamiK
     if (fold > 0) t.FoldSign = 1; else if (fold < 0) t.FoldSign = -1;
     if (double.IsNaN(creaseK) || creaseK < 0) creaseK = 0;
     if (double.IsNaN(facetK) || facetK < 0) facetK = 0;
+    if (double.IsNaN(edgeK) || edgeK < 0) edgeK = 0;
+
+    // goal weights = v1 stiffness x t.Unit (x |grad r|^2 inside the crease and corner goals). Kangaroo's
+    // Length goal moves both ends by half the length error (|grad r|^2 = 2), so its strength is 2 x AXIAL / L0.
+    foreach (Line ln in t.Edges) r.EdgeW.Add(edgeK / EDGE_REF * 2.0 * AXIAL / ln.Length * t.Unit);
 
     // goals are rebuilt every solve (cheap); Kangaroo matches them to its particles by flat position
     int nc = t.Kind.Count, mv = 0;
@@ -241,7 +310,7 @@ static class OrigamiK
         hist.TryGetValue(deg, out cnt);
         hist[deg] = cnt + 1;
       }
-      double k = (isMV ? creaseK : facetK) * t.L0[c] / t.LMean;   // v1: k = stiffness x length (js/crease.js:44-48)
+      double k = (isMV ? creaseK * CREASE : facetK * FACET) * t.L0[c] * t.Unit;   // v1: k = stiffness x length (js/crease.js:44-48)
       int i3 = t.Quads[4 * c], i4 = t.Quads[4 * c + 1], i1 = t.Quads[4 * c + 2], i2 = t.Quads[4 * c + 3];
       int side = isMV ? (kind == KIND_M ? -1 : 1) * t.FoldSign : 0;
       r.Creases.Add(new OrigamiCrease(t.Pos[i3], t.Pos[i4], t.Pos[i1], t.Pos[i2], target, side, k));
@@ -249,6 +318,12 @@ static class OrigamiK
       r.Types.Add(isMV ? 1 : 0);
       if (isMV) mv++;
     }
+    // triangle corner angles. v1's face stiffness has no length factor, and v1 works at radius 1; in model
+    // units it becomes FACE x radius against the edges' and creases' 1 / radius.
+    double kFace = FACE * t.Radius * t.Unit;
+    foreach (int[] tr in t.Tris)
+      for (int j = 0; j < 3; j++)
+        r.Creases.Add(new OrigamiCorner(t.Pos[tr[j]], t.Pos[tr[(j + 1) % 3]], t.Pos[tr[(j + 2) % 3]], kFace));
 
     Rhino.Geometry.Mesh flat = new Rhino.Geometry.Mesh();
     foreach (Point3d p in t.Pos) flat.Vertices.Add(p);
@@ -262,9 +337,9 @@ static class OrigamiK
 
     System.Globalization.CultureInfo ci = System.Globalization.CultureInfo.InvariantCulture;
     r.Info = string.Format(ci,
-      "nodes={0} edges={1} faces={2} creases={3} mvCreases={4} anchors={5} fold={6:F2} creaseK={7:G4} facetK={8:G4} tol={9:E2} thr={10:E2} demo={11} targets={13}{12}",
+      "nodes={0} edges={1} faces={2} creases={3} mvCreases={4} anchors={5} fold={6:F2} creaseK={7:G4} facetK={8:G4} edgeK={14:G4} tol={9:E2} thr={10:E2} demo={11} targets={13}{12}",
       t.Pos.Length, t.Edges.Count, t.Tris.Count, nc, mv, t.AnchorPts.Count, fold, creaseK, facetK, r.Tol, r.Thr, t.Demo,
-      string.IsNullOrEmpty(t.Note) ? "" : " note=" + t.Note, HistText(hist));
+      string.IsNullOrEmpty(t.Note) ? "" : " note=" + t.Note, HistText(hist), edgeK);
     if (curved > 0)
       r.Warning = curved + " curved segment(s) were approximated with straight lines (curved creases are not simulated as curves).";
     return r;
@@ -602,7 +677,6 @@ static class OrigamiK
     }
     if (topo.Hinges > 0) notes.Add("freeHinges:" + topo.Hinges);
 
-    double sumL = 0;
     foreach (long ek in creaseKeys)
     {
       int lo = (int)(ek >> 32), hi = (int)(ek & 0xffffffffL);
@@ -616,9 +690,13 @@ static class OrigamiK
       topo.AngDeg.Add(edgeAng.TryGetValue(EdgeKey(origOf[lo], origOf[hi]), out deg) ? deg : TARGET_DEG);
       double L0 = topo.Pos[map[lo]].DistanceTo(topo.Pos[map[hi]]);
       topo.L0.Add(L0);
-      sumL += L0;
     }
-    topo.LMean = creaseKeys.Count > 0 ? sumL / creaseKeys.Count : 1.0;
+
+    // goal weight scale: the mean edge stiffness (2 AXIAL / L0) maps to EDGE_REF
+    foreach (Point3d p in topo.Pos) topo.Radius = Math.Max(topo.Radius, p.DistanceTo(bb.Center));
+    double sumK = 0;
+    foreach (Line ln in topo.Edges) sumK += 2.0 * AXIAL / Math.Max(ln.Length, 1e-12);
+    topo.Unit = sumK > 0 ? EDGE_REF / (sumK / topo.Edges.Count) : 1.0;
 
     topo.Note = notes.Count > 0 ? string.Join(",", notes.ToArray()) : null;
     return topo;

@@ -18,7 +18,7 @@ Each crease type has its own layer. The colours match the web app's SVG conventi
 
 These match the layer table in [`grasshopper/README.md`](../README.md#use-your-own-crease-pattern).
 
-Each pattern is a Rhino group named after the pattern. Every line carries these User Text keys: `Pattern`, `CreaseType`, `TargetAngleDeg` and `Source`. `TargetAngleDeg` is 180 × the SVG stroke opacity. Both definitions read it, so partial-angle creases (for example in the crane) fold to their own angle at Fold = 1. The crane folds in `OrigamiSim.gh`. The Kangaroo version does not reach the crane shape; see [Kangaroo version](../README.md#kangaroo-version).
+Each pattern is a Rhino group named after the pattern. Every line carries these User Text keys: `Pattern`, `CreaseType`, `TargetAngleDeg` and `Source`. `TargetAngleDeg` is 180 × the SVG stroke opacity. Both definitions read it, so partial-angle creases (for example in the crane) fold to their own angle at Fold = 1. The crane folds in both `OrigamiSim.gh` and `OrigamiSim_Kangaroo.gh` when Fold is ramped up gradually; see [Kangaroo version](../README.md#kangaroo-version).
 
 ## Patterns
 

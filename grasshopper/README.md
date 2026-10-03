@@ -143,20 +143,34 @@ Kangaroo has no masses, time step or damping. Every constraint is a *goal*, a po
 
 | Group | What it does |
 |---|---|
-| Kangaroo goals | **Origami Goals** builds the same triangle mesh as the main solver. It outputs one *OrigamiCrease* goal per crease. Every mesh edge goes to Kangaroo's **Length(Line)** goal, which keeps the panels rigid. Anchors go to Kangaroo's **Anchor** goal, then through **Clean Tree**, because Anchor sends out an empty goal when there are no anchor points and the Solver fails on it. **Show** carries the mesh through the Solver so it comes out folded. |
+| Kangaroo goals | **Origami Goals** builds the same triangle mesh as the main solver. It outputs one *OrigamiCrease* goal per crease and one *OrigamiCorner* goal per triangle corner, which holds the corner at its flat angle. Every mesh edge goes to Kangaroo's **Length(Line)** goal with its own strength (**EdgeW**), which keeps the panels rigid. Anchors go to Kangaroo's **Anchor** goal, then through **Clean Tree**, because Anchor sends out an empty goal when there are no anchor points and the Solver fails on it. **Show** carries the mesh through the Solver so it comes out folded. |
 | Kangaroo solver | Kangaroo's **Solver**. **On** = true keeps it iterating, so the model animates by itself and no timer is needed. Reset rebuilds it flat. |
 | Readout | Takes the folded mesh out of the Solver. It measures strain and every fold angle from the geometry, the same way the main solver does. |
 
 **Why creases are a custom goal.** Kangaroo's own Hinge goal measures the angle between −180° and 180°. When a crease nears a full fold, the Solver overshoots past 180°, the angle jumps to about −180° and the Hinge pushes the wrong way. In tests it flipped or stalled anywhere above about 150–165°. OrigamiCrease measures the angle with the web app's formula, inside a window on its own mountain or valley side. It moves the four points the way the web app's crease forces do. Those moves have no net force or twist, so a sheet whose creases can't all reach their targets settles instead of spinning. Edges, anchors, display and the Solver are stock Kangaroo.
 
+**Why the goal weights copy the web app.** A Kangaroo goal that asks to correct an error *r* by the smallest move, with weight *w*, behaves like a spring of stiffness *w* / |∇*r*|² on *r*. So Origami Goals sets every weight to the web app's stiffness × |∇*r*|²:
+- edges: `AXIAL / L0`, so short edges are stiffer;
+- creases: `CREASE` or `FACET` × crease length;
+- triangle corners: `FACE`.
+
+Kangaroo then settles where the main solver does. Each crease goal may ask for up to ±180° per iteration (`MAXROT_DEG` = 90).
+
+Earlier versions used plain weights and a ±30° cap, and the Traditional Crane folded into a tangle: 84 of 111 mountain/valley creases ended on the right side, and facets bent 162°. Plain weights let a crease's real stiffness grow with the square of its panels' width, so creases next to narrow panels went limp. The cap made a crease 150° from its target pull no harder than one 30° away. Tested one at a time, the crane still tangles without any of these three:
+- the crease weights;
+- the corner goals;
+- the wider cap.
+
+The per-edge Length strengths bring its average crease error from 12.5° to 11.1°, within 10 % of the web app's.
+
 | Slider | Default | What it does |
 |---|---|---|
-| Crease Strength | 3 | Weight of the mountain/valley goals, scaled by crease length. |
-| Facet Strength | 3 | Weight of the flat-crease goals (Facet lines and triangulation diagonals). |
-| Edge Strength | 100 | Weight of the Length goals. Higher means less stretch. |
+| Crease Strength | 1 | Mountain/valley crease stiffness, × the web app's `CREASE` (0.7). |
+| Facet Strength | 1 | Flat-crease stiffness (Facet lines and triangulation diagonals), × the web app's `FACET` (0.7). |
+| Edge Strength | 100 | Average weight of the Length goals. Higher means less stretch. At 100, edges, creases and corners balance as in the web app. |
 | Anchor Strength | 1000 | Weight of the Anchor goals. |
 
-Only the ratios between strengths matter. With Crease and Facet at 1 the edges stretch a little less, but a large pattern takes about twice as long to settle.
+Only the ratios between strengths matter. Raising Crease Strength, or lowering Edge Strength, lets the sheet stretch more mid-fold. The corner goals' stiffness is fixed at the web app's `FACE` (0.2). Origami Goals' Info echoes `creaseK`, `facetK` and `edgeK`.
 
 **Readout Info** reports `iterations`, `meanStrain%`, `maxStrain%`, `maxThetaErrDeg` (mountain/valley creases), `maxFacetDeg` (bending of flat creases), `mvSenseOk` and `finite`. `mvSenseOk` counts mountain/valley creases on their own side and not folded more than 5° past flat-folded; a crease that swings to the wrong side or folds through itself fails it. `settled=true` means every mountain/valley crease is within 0.5° of its target. Partway through a fold, a pattern like the Miura cannot meet every target at once, so it can be still while `settled` is false.
 
@@ -166,24 +180,28 @@ Each case starts flat. "Settle" means no point moves more than 1e-6 × the sheet
 
 | Pattern | Fold | D (% of diagonal) | Main settle | Kangaroo settle | Main strain | Kangaroo strain |
 |---|---|---|---|---|---|---|
-| Single crease | 0.5 | 0 % | 147 ms | 200 ms | 0 % | 0 % |
-| Single crease | 1 | 0 % | 158 ms | 145 ms | 0 % | 0 % |
-| Miura 4×4 | 0.5 | 7.4 % | 1.1 s | 0.33 s | 1.96 % | 0.37 % |
-| Miura 4×4 | 1 | 0 % | 1.2 s | 0.20 s | 0 % | 0 % |
-| Miura 12×12 | 0.5 | 7.1 % | 8.9 s | 1.8 s | 2.73 % | 0.54 % |
-| Miura 12×12 | 1 | 0.004 % | 5.6 s | 0.45 s | 0 % | 0 % |
+| Single crease | 0.5 | 0 % | 109 ms | 53 ms | 0 % | 0 % |
+| Single crease | 1 | 0 % | 122 ms | 141 ms | 0 % | 0 % |
+| Miura 4×4 | 0.5 | 2.5 % | 0.81 s | 0.18 s | 1.82 % | 1.18 % |
+| Miura 4×4 | 1 | 0 % | 0.97 s | 0.12 s | 0 % | 0 % |
+| Miura 12×12 | 0.5 | 1.8 % | 7.6 s | 0.51 s | 2.03 % | 1.44 % |
+| Miura 12×12 | 1 | 0.004 % | 5.0 s | 0.54 s | 0 % | 0 % |
 
-These figures were measured before the main solver started scaling patterns to radius 1. Its mid-fold strain is now a little lower (Miura 4×4 at Fold 0.5: 1.82 %); the full folds are unchanged.
+When every crease can reach its target (a single crease, or any full fold), both give the same shape. Partway through a Miura fold they differ by about 2 % of the sheet size, and Kangaroo stretches a little less. On the Miura, Kangaroo settles 4–15 times faster; a single crease takes about as long in both.
 
-When every crease can reach its target (a single crease, or any full fold), both give the same shape. Partway through a Miura fold they differ by about 7 % of the sheet size. The main solver lets edges stretch about five times more, so its creases get closer to their targets. Kangaroo keeps the panels nearly rigid. Kangaroo settles 4–12 times faster.
+The Traditional Crane at Fold 1, ramped from flat in 50 steps, matches too. After a rigid alignment the two cranes differ by 1.4 % of the diagonal (RMS). Kangaroo's largest and average crease errors are 90.4° and 11.1°, against 86.6° and 10.9° for the main solver and 87.1° and 10.9° for the web app.
+
+![The main solver (left) and the Kangaroo version (right), Traditional Crane at Fold 1, rigidly aligned](captures/crane-dynamic-vs-kangaroo-fold100.png)
+
+The Miura picture below was taken with the earlier goal weights, when the two differed by about 7 % mid-fold.
 
 ![The main solver (left) and the Kangaroo version (right), Miura 12×12 at Fold 0.5, coloured by strain](captures/kangaroo-vs-v1-miura12-fold50.jpg)
 
 **Behaviour to expect:**
 - A free sheet that is unfolded back to Fold 0 is flat but may be tilted in space, because nothing holds it in place. Toggle Reset, or add an anchor.
-- Unfolding a pattern from a full fold back to flat takes longer (about 3 s on Miura 12×12), because fully folded creases start with no leverage.
+- Unfolding a pattern from a full fold back to flat takes longer (about 1.6 s on Miura 12×12), because fully folded creases start with no leverage.
 - The Kangaroo Solver merges points closer than its Tolerance, so the builder moves the extra vertex at each cut 0.1 × the document tolerance into its own panel. That keeps the two sides of a cut apart.
-- **The Traditional Crane does not fold correctly here.** Origami Goals reads `TargetAngleDeg` and merges points the same way as the main solver, so the crane gets the same mesh and targets (its Info shows `targets=`). But Kangaroo moves straight toward the nearest balance, without momentum, and from the flat sheet that leads to a different arrangement: about 84 of the 111 mountain/valley creases end on the right side. The main solver reaches the crane, as the web app does, because its momentum and damping carry the sheet past those states. Use `OrigamiSim.gh` for the crane.
+- **The crane's `mvSenseOk` reads 93/111, not 111/111, although it is folded correctly.** The other 18 creases fold up to 17° past flat-folded, which the Readout counts as folding through itself (more than 5°). The main solver's crane gives 95/111 under the same rule. Its own Info reports 111/111, because it only checks the side. Fold the crane gradually, as in the web app.
 
 ![The Kangaroo definition](captures/kangaroo-canvas.png)
 
