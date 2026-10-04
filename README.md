@@ -1,5 +1,7 @@
 # Grasshopper Origami Simulator
 
+![The Traditional Crane folding from a flat sheet in Rhino](grasshopper/captures/crane-fold.gif)
+
 A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandaghassaei/OrigamiSimulator) ([origamisimulator.org](https://origamisimulator.org/)). It folds a crease pattern drawn on Rhino layers, colours it by strain, and exports a printable model. A second version runs the same physics as Kangaroo2 goals.
 
 ## Contents
