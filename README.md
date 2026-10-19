@@ -11,7 +11,7 @@ A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandagha
 | [`grasshopper/OrigamiSim.gh`](grasshopper/OrigamiSim.gh) | Main definition: solver, strain colours, 3D Print export. |
 | [`grasshopper/OrigamiSim_Kangaroo.gh`](grasshopper/OrigamiSim_Kangaroo.gh) | Kangaroo2 version. |
 | `grasshopper/*.cs` | Source of the script components, for reading and diffing. |
-| [`grasshopper/examples/`](grasshopper/examples/) | `OrigamiExamples.3dm` with 10 ready-to-fold patterns, plus the scripts that built it. |
+| [`grasshopper/examples/`](grasshopper/examples/) | `OrigamiExamples.3dm` with 10 ready-to-fold patterns, `Flower.3dm` (a curved-crease design), plus the scripts that built them. |
 
 ## Getting started
 

@@ -35,6 +35,14 @@ Each pattern is a Rhino group named after the pattern. Every line carries these 
 | Waterbomb Tessellation | `Tessellations/waterbomb.svg` | |
 | Popup Simple | `Popup/popupSimple.svg` | cut lines (kirigami) |
 
+## Flower (curved creases)
+
+`Flower.3dm` is "Artwork 14: Flower" from Jun Mitani's *Curved-Folding Origami Design* (CRC Press, 2019): four partial cones laid out toward the centre, their curves joined into a whirl. Solid lines are mountains, dashed are valleys; every crease carries `TargetAngleDeg` = 150, because a curved crease cannot fold flat. The four valley arcs end free inside the sheet, as drawn.
+
+It was traced from the book's diagram (not included) by `flower_trace.py` (PIL + numpy: skeletonise the lines, average the four 90° rotations, write one sector to `flower.json`), and `build_flower_3dm.py` draws the four rotated copies as polylines on the Border, Mountain and Valley layers. The traced lines sit within 1 % of the sheet side of the book's drawing.
+
+To fold it: open `Flower.3dm`, open `OrigamiSim.gh`, lower **Facet Strength** and ramp **Fold** up gradually. With this definition it does not reach its targets (mean crease error about 50° at Fold 1) and crumples. The reason is not the solver physics but the triangulation: the web app folds its curved examples (Comet, Rotating Star, this Flower) only through its curved-folding importer, which subdivides every line and re-triangulates each face toward ruling-like diagonals; this definition uses the web app's standard ear clipping, and so do the same files in the web app's standard import, where Comet stays flat. For the web app's curved importer the Flower also needs its valley ends extended to the mountain arms, because free-ended creases break that importer. See `plans/flower.md`.
+
 ## Using one with `OrigamiSim.gh`
 
 Both definitions read the crease layers directly through Geometry Pipelines (`*Mountain`, `*Valley` and so on), so there is nothing to set by hand.

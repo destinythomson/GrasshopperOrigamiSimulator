@@ -10,7 +10,8 @@
 //
 // Component inputs : M (mountain), V (valley), B (border), F (facet), C (cut), H (hinge): List<Curve>
 //                    (lines, polylines; curved segments are approximated), Fold (double), Reset (bool),
-//                    Anchors (List<Point3d>)
+//                    Anchors (List<Point3d>), FacetK (double: flat-crease stiffness x FACET, the web app's
+//                    Facet Crease Stiffness slider; 1 = the web app default)
 // Line types follow the web app's SVG import (js/pattern.js:136-153, 497-531):
 //   M/V crease to -/+180 deg; F flat crease (0 deg, facet stiffness); C cut: the sheet is split along it;
 //   H hinge ("U", unassigned): edge with no angular spring; B border (a border line inside the sheet acts as a hinge).
@@ -26,7 +27,7 @@
 double tol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
 List<double> MA = OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
 List<double> VA = OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
-OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, tol);
+OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, tol);
 if (r.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, r.Warning);
 Mesh = r.OutMesh;
 Strain = r.OutStrain;
@@ -40,7 +41,7 @@ static class OrigamiSim
   // ---------------------------------------------------------------------------------------------
   const double AXIAL = 20.0;        // axialStiffness            js/globals.js:50
   const double CREASE = 0.7;        // creaseStiffness (M, V)    js/globals.js:51
-  const double FACET = 0.7;         // panelStiffness (flat)     js/globals.js:52
+  const double FACET = 0.7;         // panelStiffness (flat)     js/globals.js:52; scaled by the FacetK input
   const double FACE = 0.2;          // faceStiffness             js/globals.js:53
   const double DAMP = 0.45;         // percentDamping (ratio)    js/globals.js:56
   const int STEPS = 100;            // solver steps per solve    js/globals.js:90
@@ -82,7 +83,8 @@ static class OrigamiSim
     public int NF; public int[] FA, FB, FC; public double[] NomA, NomB, NomC; public Vector3d[] Nrm;
     // creases (one per interior edge). C1/C2 = far vertex of face 1/2, C3/C4 = crease end points
     public int NC; public int[] C1, C2, C3, C4, CF1, CF2, CType;
-    public double[] CK, CTarget, CTheta, CH1, CH2, CC1, CC2; public bool[] COn;
+    public double[] CK, CL0, CTarget, CTheta, CH1, CH2, CC1, CC2; public bool[] COn;
+    public double FacetK;   // flat-crease stiffness multiplier the CK values were computed with
     // solver
     public double Dt, Fold; public int Frames; public long Steps;
   }
@@ -94,9 +96,11 @@ static class OrigamiSim
   // ---------------------------------------------------------------------------------------------
   // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
-                           List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors, double tol)
+                           List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors,
+                           double facetK, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
+    if (double.IsNaN(facetK) || facetK < 0) facetK = 1.0;   // unconnected or invalid: the web app default
     int curved = 0;
     // polylines, rectangles and polycurves become line segments; groups[kind], angles[kind] = degrees per segment
     List<Line>[] groups = new List<Line>[NKINDS];
@@ -142,6 +146,11 @@ static class OrigamiSim
 
     if (double.IsNaN(fold)) fold = 0;
     st.Fold = Math.Max(-1.0, Math.Min(1.0, fold));
+    if (st.FacetK != facetK)   // the web app changes stiffness live, without a reset
+    {
+      for (int c = 0; c < st.NC; c++) if (st.CType[c] == 0) st.CK[c] = FACET * facetK * st.CL0[c];
+      st.FacetK = facetK;
+    }
 
     System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
     if (!reset)  // while Reset is true the sheet is held flat (web app "Reset")
@@ -464,25 +473,16 @@ static class OrigamiSim
     }
     int NV = verts.Count;
 
-    // 4. drop dangling lines (vertices of degree 1), as pattern.js removes stray vertices
+    // 4. vertex neighbours. Lines that end free inside the sheet (a vertex of degree 1) are kept, as in the
+    //    web app (pattern.js removeStrayVertices only drops vertices with no edges): the face walk below
+    //    runs out and back along such a spike, and the ear clipping puts a triangle on each side of it, so
+    //    a crease that ends inside a face still folds, as it does in the web app.
     List<HashSet<int>> nbr = new List<HashSet<int>>(NV);
     for (int k = 0; k < NV; k++) nbr.Add(new HashSet<int>());
     foreach (long ek in edgeKind.Keys) { int lo = (int)(ek >> 32), hi = (int)(ek & 0xffffffffL); nbr[lo].Add(hi); nbr[hi].Add(lo); }
-    Stack<int> stack = new Stack<int>();
-    for (int k = 0; k < NV; k++) if (nbr[k].Count == 1) stack.Push(k);
-    int pruned = 0;
-    while (stack.Count > 0)
-    {
-      int k = stack.Pop();
-      if (nbr[k].Count != 1) continue;
-      int o = -1;
-      foreach (int x in nbr[k]) { o = x; break; }
-      nbr[k].Clear(); nbr[o].Remove(k);
-      edgeKind.Remove(EdgeKey(k, o));
-      pruned++;
-      if (nbr[o].Count == 1) stack.Push(o);
-    }
-    if (pruned > 0) notes.Add("prunedDanglingEdges:" + pruned);
+    int loose = 0;
+    for (int k = 0; k < NV; k++) if (nbr[k].Count == 1) loose++;
+    if (loose > 0) notes.Add("looseEnds:" + loose);
 
     // 5. pattern plane and 2D coordinates (normal oriented toward +Z when possible)
     List<Point3d> used = new List<Point3d>();
@@ -677,7 +677,7 @@ static class OrigamiSim
     st.NC = NC;
     st.C1 = new int[NC]; st.C2 = new int[NC]; st.C3 = new int[NC]; st.C4 = new int[NC];
     st.CF1 = new int[NC]; st.CF2 = new int[NC]; st.CType = new int[NC];
-    st.CK = new double[NC]; st.CTarget = new double[NC]; st.CTheta = new double[NC];
+    st.CK = new double[NC]; st.CL0 = new double[NC]; st.CTarget = new double[NC]; st.CTheta = new double[NC];
     st.CH1 = new double[NC]; st.CH2 = new double[NC]; st.CC1 = new double[NC]; st.CC2 = new double[NC];
     st.COn = new bool[NC];
     for (int c = 0; c < NC; c++)
@@ -692,6 +692,7 @@ static class OrigamiSim
       st.CF1[c] = f1; st.CF2[c] = f2;
       int kind = KindOf(ek, edgeKind, origOf);
       double L0 = st.Pos[st.C3[c]].DistanceTo(st.Pos[st.C4[c]]);
+      st.CL0[c] = L0;
       if (kind == KIND_M || kind == KIND_V)
       {
         st.CType[c] = 1;
@@ -704,12 +705,13 @@ static class OrigamiSim
       {
         st.CType[c] = 0;
         st.CTarget[c] = 0;
-        st.CK[c] = FACET * L0;
+        st.CK[c] = FACET * L0;   // rescaled by FacetK in Run
       }
       st.CTheta[c] = 0;
       st.COn[c] = true;
     }
 
+    st.FacetK = 1.0;   // the CK values above use FACET x 1; Run rescales them to the FacetK input
     st.Note = notes.Count > 0 ? string.Join(",", notes.ToArray()) : null;
     return st;
   }

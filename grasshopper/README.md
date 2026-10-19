@@ -23,6 +23,7 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 3. The **Animate** timer is disabled when the file opens. Select it and press `Ctrl+E` (or right-click it and choose *Enable*) to run the simulation continuously. Disable it again to stop.
 4. Drag **Fold**: 0 is flat, 1 is fully folded, −1 is fully folded with mountains and valleys swapped.
 5. Set **Reset** to true to snap back to the flat sheet; set it to false to fold again.
+6. **Facet Strength** scales the stiffness of flat creases (Facet lines and triangulation diagonals): 1 is the web app's default (0.7); lower it for curved creases. It applies live, without a reset.
 
 Without the timer, each change to an input runs one solve of 100 steps.
 
@@ -49,9 +50,11 @@ The definition reads the crease pattern straight from Rhino layers. Anything on 
 
 With every crease layer empty, the solver falls back to the built-in demo.
 
-Faces with more than three sides are triangulated, and the added diagonals act as Facet creases, as in the web app. Lines that dangle (end without meeting anything) are ignored.
+Faces with more than three sides are triangulated, and the added diagonals act as Facet creases, as in the web app. A crease may end free inside the sheet (common in curved-crease designs): the triangulation puts a triangle on each side of it and it folds, as in the web app. Info counts such ends as `looseEnds`.
 
 **Partial folds.** In the web app a crease's stroke opacity sets how far it folds: opacity × 180°. Here, give the Mountain or Valley line a User Text entry `TargetAngleDeg` with a value from 0 to 180 (Properties panel → Attribute User Text, or the `SetUserText` command). At Fold = 1 the crease folds to that angle; lines without it fold to 180°. The example patterns already carry it. Patterns such as the crane need it: forcing their 45° and 135° creases to 180° asks for a shape that cannot exist, and the sheet tangles. The value is read through the layer pipelines on every solve, so an edit takes effect the next time the solver runs (move Fold, or run the Animate timer). Curves wired in some other way, for example internalised in a parameter, have no Rhino object to read from and fold to 180°.
+
+**Curved creases.** Draw them as polylines (or curves, which are approximated). The flat regions between curved creases have to bend into cones and cylinders, and the triangulation diagonals resist that with the facet stiffness, so lower **Facet Strength** (the web app's Facet Crease Stiffness slider). Full folds (180°) are impossible on a curve, so give the creases a `TargetAngleDeg`. Note that the triangulation is the web app's ear clipping, not rulings: a curved-crease pattern can still settle far from its targets (see the Flower example).
 
 **Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does ([`js/model.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/model.js)). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
 
@@ -63,7 +66,7 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 |---|---|---|---|---|
 | `AXIAL` | 20 | Axial Stiffness | 10–100 | Edge stretch resistance. Higher is stiffer but forces a smaller time step. |
 | `CREASE` | 0.7 | Fold Stiffness | 0–3 | Strength of mountain and valley creases. |
-| `FACET` | 0.7 | Facet Crease Stiffness | 0–3 | How strongly facets resist bending. |
+| `FACET` | 0.7 | Facet Crease Stiffness | 0–3 | How strongly facets resist bending. Multiplied by the **Facet Strength** slider. |
 | `FACE` | 0.2 | Face Stiffness | 0–5 | How strongly triangles keep their corner angles. |
 | `DAMP` | 0.45 | Damping | 0.01–0.5 | Damping ratio of the edge springs. |
 | `STEPS` | 100 | (fixed) | | Solver steps per solve. |
@@ -208,6 +211,7 @@ The Miura picture below was taken with the earlier goal weights, when the two di
 
 - **The mesh explodes or `finite=false`.** Toggle Reset. Then lower `AXIAL` or `CREASE`, or raise `DAMP`.
 - **Nothing folds or `build failed: no closed faces`.** Lines probably do not meet, or the Border is missing. Check them with `_Intersect` or by raising the document tolerance.
+- **Curved creases stop well short of their target.** Lower **Facet Strength**; see *Curved creases* above.
 - **My pattern is ignored and the demo shows.** Check the layer names (`Border`, `Mountain`, `Valley`, `Facet`, `Cut`, `Hinge`) and that the objects are not hidden.
 - **It folds the wrong way.** Swap the M and V inputs, or set Fold negative.
 - **A pattern that folds in the web app tangles here.** Check that its partial folds carry `TargetAngleDeg` (the `targets` field in Info lists the angles that were read), and fold it gradually: the web app's crane also tangles if Fold jumps straight from 0 to 1.
