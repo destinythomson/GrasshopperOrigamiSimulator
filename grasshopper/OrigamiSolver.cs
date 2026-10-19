@@ -11,7 +11,11 @@
 // Component inputs : M (mountain), V (valley), B (border), F (facet), C (cut), H (hinge): List<Curve>
 //                    (lines, polylines; curved segments are approximated), Fold (double), Reset (bool),
 //                    Anchors (List<Point3d>), FacetK (double: flat-crease stiffness x FACET, the web app's
-//                    Facet Crease Stiffness slider; 1 = the web app default)
+//                    Facet Crease Stiffness slider; 1 = the web app default),
+//                    VertInt (double: every input segment longer than this is cut into equal pieces, model units;
+//                    0 = off; the web app's curved-folding importer uses globals.vertInt = 20 px),
+//                    Curved (bool: re-triangulate faces toward ruling-like diagonals as the web app's curved-folding
+//                    importer does, js/curvedFolding.js triangulatePolys; off = the web app's standard ear clipping)
 // Line types follow the web app's SVG import (js/pattern.js:136-153, 497-531):
 //   M/V crease to -/+180 deg; F flat crease (0 deg, facet stiffness); C cut: the sheet is split along it;
 //   H hinge ("U", unassigned): edge with no angular spring; B border (a border line inside the sheet acts as a hinge).
@@ -27,7 +31,7 @@
 double tol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
 List<double> MA = OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
 List<double> VA = OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
-OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, tol);
+OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, VertInt, Curved, tol);
 if (r.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, r.Warning);
 Mesh = r.OutMesh;
 Strain = r.OutStrain;
@@ -97,21 +101,24 @@ static class OrigamiSim
   // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
                            List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors,
-                           double facetK, double tol)
+                           double facetK, double vertInt, bool curvedMode, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     if (double.IsNaN(facetK) || facetK < 0) facetK = 1.0;   // unconnected or invalid: the web app default
+    if (double.IsNaN(vertInt) || vertInt < 0) vertInt = 0;  // 0 = no subdivision
     int curved = 0;
-    // polylines, rectangles and polycurves become line segments; groups[kind], angles[kind] = degrees per segment
+    // polylines, rectangles and polycurves become line segments; groups[kind], angles[kind] = degrees per segment,
+    // crv[kind] = true when the segment comes from a curve or a multi-segment polyline (a curved crease)
     List<Line>[] groups = new List<Line>[NKINDS];
     List<double>[] angles = new List<double>[NKINDS];
-    for (int g = 0; g < NKINDS; g++) angles[g] = new List<double>();
-    groups[KIND_M] = ToLines(M, MA, tol, ref curved, angles[KIND_M]);
-    groups[KIND_V] = ToLines(V, VA, tol, ref curved, angles[KIND_V]);
-    groups[KIND_B] = ToLines(B, null, tol, ref curved, angles[KIND_B]);
-    groups[KIND_F] = ToLines(F, null, tol, ref curved, angles[KIND_F]);
-    groups[KIND_C] = ToLines(C, null, tol, ref curved, angles[KIND_C]);
-    groups[KIND_H] = ToLines(H, null, tol, ref curved, angles[KIND_H]);
+    List<bool>[] crv = new List<bool>[NKINDS];
+    for (int g = 0; g < NKINDS; g++) { angles[g] = new List<double>(); crv[g] = new List<bool>(); }
+    groups[KIND_M] = ToLines(M, MA, tol, ref curved, angles[KIND_M], crv[KIND_M]);
+    groups[KIND_V] = ToLines(V, VA, tol, ref curved, angles[KIND_V], crv[KIND_V]);
+    groups[KIND_B] = ToLines(B, null, tol, ref curved, angles[KIND_B], crv[KIND_B]);
+    groups[KIND_F] = ToLines(F, null, tol, ref curved, angles[KIND_F], crv[KIND_F]);
+    groups[KIND_C] = ToLines(C, null, tol, ref curved, angles[KIND_C], crv[KIND_C]);
+    groups[KIND_H] = ToLines(H, null, tol, ref curved, angles[KIND_H], crv[KIND_H]);
     int nLines = 0;
     foreach (List<Line> g in groups) nLines += g.Count;
     List<Point3d> an = anchors != null ? new List<Point3d>(anchors) : new List<Point3d>();
@@ -121,15 +128,17 @@ static class OrigamiSim
     {
       demo = DEMO_WHEN_EMPTY;
       Demo(demo, groups[KIND_M], groups[KIND_V], groups[KIND_B]);
-      for (int g = 0; g < NKINDS; g++) while (angles[g].Count < groups[g].Count) angles[g].Add(TARGET_DEG);
+      for (int g = 0; g < NKINDS; g++) while (angles[g].Count < groups[g].Count) { angles[g].Add(TARGET_DEG); crv[g].Add(false); }
     }
 
     ulong key = Hash(groups, angles, an, tol, demo);
+    key = Mix(key, BitConverter.DoubleToInt64Bits(vertInt));
+    key = Mix(key, curvedMode ? 1 : 0);
     SimState st;
     States.TryGetValue(id, out st);
     if (st == null || st.Key != key || reset)
     {
-      try { st = Build(groups, angles, an, tol); }
+      try { st = Build(groups, angles, crv, an, vertInt, curvedMode, tol); }
       catch (Exception ex)
       {
         States.Remove(id);
@@ -192,41 +201,44 @@ static class OrigamiSim
 
   // Curves from Rhino (lines, polylines, rectangles, polycurves) -> straight line segments.
   // Non-linear segments are approximated by a polyline and counted. Every segment gets its curve's angle
-  // (ang[i], or TARGET_DEG) in outAng.
-  static List<Line> ToLines(List<Curve> curves, List<double> ang, double tol, ref int approximated, List<double> outAng)
+  // (ang[i], or TARGET_DEG) in outAng, and in outCrv whether it is a piece of a curved line: a polyline with more
+  // than one segment or an approximated curve. The curved-folding importer marks only Bezier-flattened mountains
+  // and valleys as curves ("CM"/"CV", curvedFolding.js divPathC/parseSVG); a plain Line is not one.
+  static List<Line> ToLines(List<Curve> curves, List<double> ang, double tol, ref int approximated, List<double> outAng, List<bool> outCrv)
   {
     List<Line> lines = new List<Line>();
     if (curves == null) return lines;
     for (int i = 0; i < curves.Count; i++)
     {
-      AddCurve(lines, curves[i], tol, ref approximated);
+      AddCurve(lines, curves[i], tol, ref approximated, outCrv);
       double a = ang != null && i < ang.Count ? ang[i] : TARGET_DEG;
       while (outAng.Count < lines.Count) outAng.Add(a);
+      while (outCrv.Count < lines.Count) outCrv.Add(false);
     }
     return lines;
   }
 
-  static void AddCurve(List<Line> lines, Curve c, double tol, ref int approximated)
+  static void AddCurve(List<Line> lines, Curve c, double tol, ref int approximated, List<bool> outCrv)
   {
     if (c == null || !c.IsValid) return;
     Polyline pl;
-    if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl); return; }
+    if (c.TryGetPolyline(out pl)) { AddPolyline(lines, pl, outCrv, pl.Count > 2); return; }
     Curve[] segs = c.DuplicateSegments();
     if (segs == null || segs.Length == 0) segs = new Curve[] { c };
     foreach (Curve sg in segs)
     {
-      if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); continue; }
+      if (sg.IsLinear(tol)) { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); outCrv.Add(segs.Length > 1); continue; }
       approximated++;
       PolylineCurve pc = sg.ToPolyline(0, 0, 0.1, 0, 0, tol, 0, 0, true);
       Polyline p2;
-      if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2);
-      else lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd));
+      if (pc != null && pc.TryGetPolyline(out p2)) AddPolyline(lines, p2, outCrv, true);
+      else { lines.Add(new Line(sg.PointAtStart, sg.PointAtEnd)); outCrv.Add(true); }
     }
   }
 
-  static void AddPolyline(List<Line> lines, Polyline pl)
+  static void AddPolyline(List<Line> lines, Polyline pl, List<bool> outCrv, bool curvedLine)
   {
-    for (int i = 0; i + 1 < pl.Count; i++) lines.Add(new Line(pl[i], pl[i + 1]));
+    for (int i = 0; i + 1 < pl.Count; i++) { lines.Add(new Line(pl[i], pl[i + 1])); outCrv.Add(curvedLine); }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -394,17 +406,42 @@ static class OrigamiSim
   // Build: lines -> planar graph -> faces -> triangles -> nodes, beams, creases
   // (replaces pattern.js cleanup + triangulation and model.js sync)
   // ---------------------------------------------------------------------------------------------
-  static SimState Build(List<Line>[] groups, List<double>[] angles, List<Point3d> anchors, double tol)
+  static SimState Build(List<Line>[] groups, List<double>[] angles, List<bool>[] crv, List<Point3d> anchors,
+                        double vertInt, bool curvedMode, double tol)
   {
     List<string> notes = new List<string>();
 
-    // 1. tagged input lines (kind + target angle in degrees)
+    // 1. tagged input lines (kind + target angle in degrees + curved flag)
     List<Line> lines = new List<Line>();
     List<int> kinds = new List<int>();
     List<double> angs = new List<double>();
-    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, angs, groups[g], angles[g], g, tol);
+    List<bool> crvs = new List<bool>();
+    for (int g = 0; g < NKINDS; g++) AddLines(lines, kinds, angs, crvs, groups[g], angles[g], crv[g], g, tol);
     int n = lines.Count;
     if (n == 0) throw new Exception("no input lines longer than the document tolerance");
+
+    // 1a. vertex interval (curvedFolding.js parseLine/parsePolyline: border lines are cut every globals.vertInt = 20 px,
+    //     and divPathC flattens curves to chords no longer than it; straight creases, facets, hinges and cuts keep their
+    //     length). Border segments and pieces of curved lines longer than VertInt are cut into equal pieces, so the
+    //     rulings found in 7a have vertices to end on along the border and the curves.
+    if (vertInt > 0)
+    {
+      List<Line> l2 = new List<Line>(); List<int> k2 = new List<int>(); List<double> a2 = new List<double>(); List<bool> c2 = new List<bool>();
+      for (int i = 0; i < n; i++)
+      {
+        Line ln = lines[i];
+        int pieces = (kinds[i] == KIND_B || crvs[i]) ? (int)Math.Ceiling(ln.Length / vertInt - 1e-9) : 1;
+        if (pieces < 1) pieces = 1;
+        for (int k = 0; k < pieces; k++)
+        {
+          l2.Add(new Line(ln.PointAt((double)k / pieces), ln.PointAt((double)(k + 1) / pieces)));
+          k2.Add(kinds[i]); a2.Add(angs[i]); c2.Add(crvs[i]);
+        }
+      }
+      notes.Add("vertInt:" + n + "->" + l2.Count);
+      lines = l2; kinds = k2; angs = a2; crvs = c2;
+      n = lines.Count;
+    }
 
     // 1b. web app frame (js/model.js:340-357): centre on the bounding-box centre and scale to bounding radius 1, so the
     //     stiffness balance does not depend on the drawing units. Vertices merge within MERGE_REL of that radius.
@@ -454,6 +491,7 @@ static class OrigamiSim
     Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>();
     Dictionary<long, int> edgeKind = new Dictionary<long, int>();
     Dictionary<long, double> edgeAng = new Dictionary<long, double>();
+    HashSet<long> edgeCurve = new HashSet<long>();   // M/V edges that are pieces of a curved line ("CM"/"CV")
     for (int i = 0; i < n; i++)
     {
       List<double> ts = cuts[i];
@@ -468,7 +506,11 @@ static class OrigamiSim
         if (u == w) continue;
         long ek = EdgeKey(u, w);
         int old;
-        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old)) { edgeKind[ek] = kinds[i]; edgeAng[ek] = angs[i]; }
+        if (!edgeKind.TryGetValue(ek, out old) || Priority(kinds[i]) > Priority(old))
+        {
+          edgeKind[ek] = kinds[i]; edgeAng[ek] = angs[i];
+          if (crvs[i] && (kinds[i] == KIND_M || kinds[i] == KIND_V)) edgeCurve.Add(ek); else edgeCurve.Remove(ek);
+        }
       }
     }
     int NV = verts.Count;
@@ -535,8 +577,21 @@ static class OrigamiSim
 
     // 7. triangulate: triangles kept, quads split on the shorter diagonal, larger polygons ear-clipped
     //    (pattern.js:984-1135); new diagonals become flat creases
+    // 7a. Curved: the web app's curved-folding importer (curvedFolding.js triangulatePolys) triangulates every face
+    //     with more than 4 vertices by a constrained Delaunay triangulation (cdt2d) and then flips diagonals toward
+    //     ruling-like ones (Model.orthogonal). Here the ear-clipped face is first flipped to the Delaunay triangulation
+    //     (Lawson flips, which converge to the same CDT) and then through the same orthogonal() flip loop.
     List<int[]> tris = new List<int[]>();
-    foreach (List<int> f in faces) Triangulate(f, verts, X, Y, tris, areaEps);
+    int[] flipStats = new int[2];
+    foreach (List<int> f in faces)
+    {
+      if (!curvedMode || f.Count <= 4) { Triangulate(f, verts, X, Y, tris, areaEps); continue; }
+      List<int[]> ft = new List<int[]>();
+      Triangulate(f, verts, X, Y, ft, areaEps);
+      RulingFlips(ft, X, Y, edgeKind, edgeCurve, areaEps, flipStats);
+      tris.AddRange(ft);
+    }
+    if (curvedMode) notes.Add("curved:delaunayFlips=" + flipStats[0] + ",rulingFlips=" + flipStats[1]);
     if (tris.Count == 0) throw new Exception("triangulation produced no triangles");
 
     // 7b. cuts (pattern.js splitCuts): around every vertex on a cut, the triangle fan is split into groups
@@ -791,13 +846,14 @@ static class OrigamiSim
     throw new Exception("degenerate triangle");
   }
 
-  static void AddLines(List<Line> lines, List<int> kinds, List<double> angs, List<Line> src, List<double> srcAng, int kind, double tol)
+  static void AddLines(List<Line> lines, List<int> kinds, List<double> angs, List<bool> crvs, List<Line> src, List<double> srcAng,
+                       List<bool> srcCrv, int kind, double tol)
   {
     for (int i = 0; i < src.Count; i++)
     {
       Line ln = src[i];
       if (!ln.IsValid || ln.Length <= tol) continue;
-      lines.Add(ln); kinds.Add(kind); angs.Add(i < srcAng.Count ? srcAng[i] : TARGET_DEG);
+      lines.Add(ln); kinds.Add(kind); angs.Add(i < srcAng.Count ? srcAng[i] : TARGET_DEG); crvs.Add(i < srcCrv.Count && srcCrv[i]);
     }
   }
 
@@ -916,6 +972,184 @@ static class OrigamiSim
     // fallback for numerically awkward polygons: fan from the first vertex, skipping degenerate triangles
     for (int k = 1; k + 1 < idx.Count; k++)
       if (Area2(idx[0], idx[k], idx[k + 1], X, Y) > eps) tris.Add(new int[] { idx[0], idx[k], idx[k + 1] });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Curved mode: edge flips on one face's triangle mesh (curvedFolding.js, class Model + triangulatePolys)
+  // ---------------------------------------------------------------------------------------------
+  // Triangles are CCW. Half-edge u->v belongs to the triangle whose CCW order runs u->v; the triangle on the other
+  // side owns v->u. Edges of the input (edgeKind) are never flipped; "curve" edges (edgeCurve) stop the walk around
+  // a vertex that looks for the crease directions (Model.cHalfedge1-8).
+  class FaceMesh
+  {
+    public List<int[]> T; public double[] X, Y;
+    public Dictionary<long, int> LeftOf = new Dictionary<long, int>();   // HalfKey(u, v) -> triangle
+    public Dictionary<int, int> VE = new Dictionary<int, int>();         // Model._vertices_edges: interior edges per vertex
+    public Dictionary<long, int> EdgeKind; public HashSet<long> EdgeCurve;
+
+    public int Third(int t, int u, int v) { int[] tr = T[t]; for (int k = 0; k < 3; k++) if (tr[k] != u && tr[k] != v) return tr[k]; return -1; }
+    public int Left(int u, int v) { int t; return LeftOf.TryGetValue(HalfKey(u, v), out t) ? t : -1; }
+    // next neighbour of p when rotating counter-clockwise (or clockwise) from q; -1 at the face boundary
+    public int Rotate(int p, int q, bool cw)
+    {
+      int t = cw ? Left(q, p) : Left(p, q);
+      return t < 0 ? -1 : Third(t, p, q);
+    }
+    public bool IsCurve(int u, int v) { return EdgeCurve.Contains(EdgeKey(u, v)); }
+    public bool IsInput(int u, int v) { return EdgeKind.ContainsKey(EdgeKey(u, v)); }
+    public void Register(int t) { int[] tr = T[t]; for (int e = 0; e < 3; e++) LeftOf[HalfKey(tr[e], tr[(e + 1) % 3])] = t; }
+    public void Unregister(int t) { int[] tr = T[t]; for (int e = 0; e < 3; e++) LeftOf.Remove(HalfKey(tr[e], tr[(e + 1) % 3])); }
+    public void Bump(int v, int d) { int c; VE.TryGetValue(v, out c); VE[v] = c + d; }
+    public int Count(int v) { int c; VE.TryGetValue(v, out c); return c; }
+
+    // the first curve edge (p, x) met when rotating around p away from q0, starting with (p, q0) itself; -1 if the
+    // face boundary is reached first (Model.cHalfedge1-8: the recursion stops at a half-edge without a pair)
+    public int FindCurve(int p, int q0, bool cw)
+    {
+      int q = q0;
+      for (int guard = 0; guard < 100000; guard++)
+      {
+        if (IsCurve(p, q)) return q;
+        int q2 = Rotate(p, q, cw);
+        if (q2 < 0 || q2 == q0) return -1;
+        q = q2;
+      }
+      return -1;
+    }
+
+    public double Angle(int a, int b, int c)   // Model.angle: angle at a between ab and ac
+    {
+      double x1 = X[b] - X[a], y1 = Y[b] - Y[a], x2 = X[c] - X[a], y2 = Y[c] - Y[a];
+      double l = Math.Sqrt((x1 * x1 + y1 * y1) * (x2 * x2 + y2 * y2));
+      return l > 0 ? Math.Acos(Clamp((x1 * x2 + y1 * y2) / l)) : 0;
+    }
+
+    // Model.cross: the diagonals ab and cd of the quad properly intersect (the quad is strictly convex)
+    public bool Cross(int a, int b, int c, int d)
+    {
+      double x1 = X[a], y1 = Y[a], x2 = X[b], y2 = Y[b], x3 = X[c], y3 = Y[c], x4 = X[d], y4 = Y[d];
+      double ta = (x3 - x4) * (y1 - y3) + (y3 - y4) * (x3 - x1);
+      double tb = (x3 - x4) * (y2 - y3) + (y3 - y4) * (x3 - x2);
+      double tc = (x1 - x2) * (y3 - y1) + (y1 - y2) * (x1 - x3);
+      double td = (x1 - x2) * (y4 - y1) + (y1 - y2) * (x1 - x4);
+      return tc * td < 0 && ta * tb < 0;
+    }
+
+    // Model.orthogonal for the diagonal a->b between triangles (a, b, c) and (b, a, d): how far the current diagonal
+    // (at a and b) and the flipped one c-d (at c and d) are from making equal angles with the crease directions on
+    // either side of them. Returns the flipped diagonal's score when it is the better one, else +infinity.
+    // A score of exactly 0 counts as "not measured", as in the JavaScript truth test.
+    public double Orthogonal(int a, int b, int c, int d)
+    {
+      double dA = Diff(a, FindCurve(a, d, true), FindCurve(a, c, false), b);    // cHalfedge1, cHalfedge2
+      double dB = Diff(b, FindCurve(b, d, false), FindCurve(b, c, true), a);    // cHalfedge3, cHalfedge4
+      double dC = Diff(d, FindCurve(d, b, true), FindCurve(d, a, false), c);    // cHalfedge5, cHalfedge6
+      double dD = Diff(c, FindCurve(c, b, false), FindCurve(c, a, true), d);    // cHalfedge7, cHalfedge8
+      bool hA = dA > 0, hB = dB > 0, hC = dC > 0, hD = dD > 0;
+      double inf = double.PositiveInfinity;
+      if (hC && hD)
+      {
+        if (hA && hB) return dA + dB > dC + dD ? dC + dD : inf;
+        if (!hA && !hB) return dC + dD;
+        if (hA) return dA * 2 > dC + dD ? dC + dD : inf;
+        return dB * 2 > dC + dD ? dC + dD : inf;
+      }
+      if (hC || hD)
+      {
+        double one = hC ? dC : dD;
+        if (!hA && !hB) return one * 2;
+        if (hA && hB) return dA + dB > one * 2 ? one * 2 : inf;   // the source has a bitwise & here for the D-only case; the && of the C-only case is used
+        if (hA) return dA > one ? one * 2 : inf;
+        return dB > one ? one * 2 : inf;
+      }
+      return inf;
+    }
+
+    // (angle(x p q) - angle(y p q))^2 when both crease directions x, y at p were found, else 0 (= not measured)
+    double Diff(int p, int x, int y, int q)
+    {
+      if (x < 0 || y < 0) return 0;
+      double d = Angle(p, x, q) - Angle(p, y, q);
+      return d * d;
+    }
+
+    // Model.edgeSwap: replace diagonal a-b (triangles (a, b, c), (b, a, d)) by c-d
+    public void Flip(int a, int b, int c, int d)
+    {
+      int t1 = Left(a, b), t2 = Left(b, a);
+      Unregister(t1); Unregister(t2);
+      T[t1] = new int[] { a, d, c };
+      T[t2] = new int[] { d, b, c };
+      Register(t1); Register(t2);
+      Bump(c, 1); Bump(d, 1); Bump(a, -1); Bump(b, -1);
+    }
+  }
+
+  static void RulingFlips(List<int[]> ft, double[] X, double[] Y, Dictionary<long, int> edgeKind, HashSet<long> edgeCurve,
+                          double eps, int[] stats)
+  {
+    FaceMesh m = new FaceMesh();
+    m.T = ft; m.X = X; m.Y = Y; m.EdgeKind = edgeKind; m.EdgeCurve = edgeCurve;
+    for (int t = 0; t < ft.Count; t++) m.Register(t);
+    // flippable diagonals: edges with a triangle on both sides that are not input lines (Model.triangulatedEdges with a
+    // pair; a crease that ends inside the face has two triangles too, but it is an input line and stays)
+    List<long> diags = new List<long>();
+    foreach (KeyValuePair<long, int> kv in m.LeftOf)
+    {
+      int u = (int)(kv.Key >> 32), v = (int)(kv.Key & 0xffffffffL);
+      if (u > v || m.Left(v, u) < 0) continue;
+      m.Bump(u, 1); m.Bump(v, 1);                 // Model.addFace counts interior edges at both ends
+      if (!m.IsInput(u, v)) diags.Add(EdgeKey(u, v));
+    }
+
+    // a) Lawson flips to the constrained Delaunay triangulation (stands in for cdt2d)
+    bool changed = true;
+    for (int pass = 0; changed && pass < 1000; pass++)
+    {
+      changed = false;
+      for (int i = 0; i < diags.Count; i++)
+      {
+        int a, b, c, d;
+        if (!Quad(m, diags[i], out a, out b, out c, out d)) continue;
+        if (!m.Cross(a, b, c, d)) continue;
+        if (m.Angle(c, a, b) + m.Angle(d, a, b) <= Math.PI + 1e-9) continue;   // d outside the circumcircle of (a, b, c)
+        if (Area2(a, d, c, X, Y) <= eps || Area2(d, b, c, X, Y) <= eps) continue;
+        m.Flip(a, b, c, d);
+        diags[i] = EdgeKey(c, d);
+        changed = true; stats[0]++;
+      }
+    }
+
+    // b) triangulatePolys flip loop: flip the legal diagonal with the smallest orthogonal() score until none improves
+    for (int repeat = 0; repeat < 1000; repeat++)
+    {
+      double best = double.PositiveInfinity; int bi = -1;
+      int ba = 0, bb = 0, bc = 0, bd = 0;
+      for (int i = 0; i < diags.Count; i++)
+      {
+        int a, b, c, d;
+        if (!Quad(m, diags[i], out a, out b, out c, out d)) continue;
+        if (!m.Cross(a, b, c, d)) continue;
+        if (m.Count(c) >= 4 || m.Count(d) >= 4) continue;              // Model.checkVertexNumber
+        if (Area2(a, d, c, X, Y) <= eps || Area2(d, b, c, X, Y) <= eps) continue;
+        double s = m.Orthogonal(a, b, c, d);
+        if (s < best) { best = s; bi = i; ba = a; bb = b; bc = c; bd = d; }
+      }
+      if (bi < 0) break;
+      m.Flip(ba, bb, bc, bd);
+      diags[bi] = EdgeKey(bc, bd);
+      stats[1]++;
+    }
+  }
+
+  // the quad around diagonal key: a->b with c on its left and d on its right
+  static bool Quad(FaceMesh m, long key, out int a, out int b, out int c, out int d)
+  {
+    a = (int)(key >> 32); b = (int)(key & 0xffffffffL); c = -1; d = -1;
+    int t1 = m.Left(a, b), t2 = m.Left(b, a);
+    if (t1 < 0 || t2 < 0) return false;
+    c = m.Third(t1, a, b); d = m.Third(t2, a, b);
+    return c >= 0 && d >= 0 && c != d;
   }
 
   static ulong Hash(List<Line>[] groups, List<double>[] angles, List<Point3d> an, double tol, int demo)

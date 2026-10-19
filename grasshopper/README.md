@@ -24,8 +24,17 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 4. Drag **Fold**: 0 is flat, 1 is fully folded, −1 is fully folded with mountains and valleys swapped.
 5. Set **Reset** to true to snap back to the flat sheet; set it to false to fold again.
 6. **Facet Strength** scales the stiffness of flat creases (Facet lines and triangulation diagonals): 1 is the web app's default (0.7); lower it for curved creases. It applies live, without a reset.
+7. **Vertex Interval** and **Curved** switch on the web app's curved-folding import (see [Curved creases](#curved-creases)). Both are off when the file opens, and the examples with straight creases do not need them.
 
 Without the timer, each change to an input runs one solve of 100 steps.
+
+| Control | Solver input | Default | What it does |
+|---|---|---|---|
+| Fold | Fold | 0 | Fraction of each crease's target angle: 0 flat, 1 folded, −1 folded with mountains and valleys swapped. |
+| Reset | Reset | false | While true, the sheet is held flat and the model is rebuilt. |
+| Facet Strength | FacetK | 1 | Flat-crease stiffness, × the web app's `FACET` (0.7). Applies live. |
+| Vertex Interval | VertInt | 0 (off) | Border lines and curved creases longer than this (model units) are cut into equal pieces before triangulation; the web app's curved importer uses 20 px on sheets of 600–800 px, so about 2 on a 100-unit sheet. Straight creases keep their length, as there. |
+| Curved | Curved | false | Re-triangulates every face toward ruling-like diagonals, as the web app's curved-folding importer does. |
 
 ## Use your own crease pattern
 
@@ -54,7 +63,14 @@ Faces with more than three sides are triangulated, and the added diagonals act a
 
 **Partial folds.** In the web app a crease's stroke opacity sets how far it folds: opacity × 180°. Here, give the Mountain or Valley line a User Text entry `TargetAngleDeg` with a value from 0 to 180 (Properties panel → Attribute User Text, or the `SetUserText` command). At Fold = 1 the crease folds to that angle; lines without it fold to 180°. The example patterns already carry it. Patterns such as the crane need it: forcing their 45° and 135° creases to 180° asks for a shape that cannot exist, and the sheet tangles. The value is read through the layer pipelines on every solve, so an edit takes effect the next time the solver runs (move Fold, or run the Animate timer). Curves wired in some other way, for example internalised in a parameter, have no Rhino object to read from and fold to 180°.
 
-**Curved creases.** Draw them as polylines (or curves, which are approximated). The flat regions between curved creases have to bend into cones and cylinders, and the triangulation diagonals resist that with the facet stiffness, so lower **Facet Strength** (the web app's Facet Crease Stiffness slider). Full folds (180°) are impossible on a curve, so give the creases a `TargetAngleDeg`. Note that the triangulation is the web app's ear clipping, not rulings: a curved-crease pattern can still settle far from its targets (see the Flower example).
+**Curved creases.** Draw them as polylines (or curves, which are approximated). The flat regions between curved creases have to bend into cones and cylinders, and the triangulation diagonals resist that with the facet stiffness, so lower **Facet Strength** (the web app's Facet Crease Stiffness slider). Full folds (180°) are impossible on a curve, so give the creases a `TargetAngleDeg`.
+
+The web app opens its curved examples (Comet, Rotating Star, the Mitani designs) through a separate curved-folding importer ([`js/curvedFolding.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/curvedFolding.js)), not the standard one this port was made from, and through the standard importer the same files tangle or stay flat. The two controls reproduce that importer:
+
+- **Vertex Interval** cuts the border and every curved crease into pieces no longer than the interval (the importer cuts borders every `vertInt` = 20 px and flattens Bezier curves to chords no longer than that; straight creases, facets, hinges and cuts stay whole). This gives the rulings vertices to end on along the border and the curves.
+- **Curved** triangulates each face with more than four vertices as the importer does: a constrained Delaunay triangulation first (the importer calls `cdt2d`; here the ear-clipped face is flipped to the same triangulation), then the importer's flip loop (`Model.orthogonal`, `edgeSwap`): among the diagonals whose quad is convex and whose new end vertices carry fewer than four diagonals, flip the one that most improves the symmetry of the diagonal with respect to the crease directions on either side of its ends, until no flip improves (at most 1000 per face). A diagonal that makes equal angles with the incoming and outgoing crease at a vertex is perpendicular to a smooth curve there, which is what a ruling of a cone or cylinder looks like. Only curved mountains and valleys count as crease directions, as in the importer (its `CM`/`CV` assignments): here a crease is curved when it comes from a curve or a polyline with more than one segment, so a plain Line is not.
+
+Info then reports `vertInt:<segments before>-><after>` and `curved:delaunayFlips=…,rulingFlips=…`. With the Flower and the Rotating Star examples the mesh is a set of cones with rulings radiating from the apex of each lobe, every crease folds the right way and the Rotating Star folds into its star; the Flower still settles about 50° short of its 150° targets (see the examples README). The crane and the other straight-crease examples are unchanged with both controls off.
 
 **Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does ([`js/model.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/model.js)). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
 
@@ -92,6 +108,7 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 | `meanAbsV` | Average vertex speed. Near zero means the model has settled. |
 | `finite` | False if the simulation blew up. |
 | `targets` | Mountain/valley creases per target angle at Fold = 1, mountains negative, for example `-180x50,45x8`. Use it to check that `TargetAngleDeg` was read. |
+| `note` | Build notes: `looseEnds` (creases ending inside the sheet), `vertInt` (segments before and after the Vertex Interval cut), `curved` (Delaunay and ruling flips made), `cutEdges`, `freeHinges`, `fixedNodes`. |
 
 ## 3D print
 
@@ -211,7 +228,7 @@ The Miura picture below was taken with the earlier goal weights, when the two di
 
 - **The mesh explodes or `finite=false`.** Toggle Reset. Then lower `AXIAL` or `CREASE`, or raise `DAMP`.
 - **Nothing folds or `build failed: no closed faces`.** Lines probably do not meet, or the Border is missing. Check them with `_Intersect` or by raising the document tolerance.
-- **Curved creases stop well short of their target.** Lower **Facet Strength**; see *Curved creases* above.
+- **Curved creases stop well short of their target, or the pattern tangles.** Set **Vertex Interval** to about 2 % of the sheet, switch **Curved** on, lower **Facet Strength** and ramp Fold slowly; see *Curved creases* above.
 - **My pattern is ignored and the demo shows.** Check the layer names (`Border`, `Mountain`, `Valley`, `Facet`, `Cut`, `Hinge`) and that the objects are not hidden.
 - **It folds the wrong way.** Swap the M and V inputs, or set Fold negative.
 - **A pattern that folds in the web app tangles here.** Check that its partial folds carry `TargetAngleDeg` (the `targets` field in Info lists the angles that were read), and fold it gradually: the web app's crane also tangles if Fold jumps straight from 0 to 1.
@@ -221,4 +238,4 @@ The Miura picture below was taken with the earlier goal weights, when the two di
 
 ## How it was built
 
-The canvas was assembled headlessly through the Rhino MCP (`g1_*` tools for placement and wiring; `run_csharp` for the script code, groups and save). The 3D Print group was added the same way, and the Kangaroo version was built the same way, starting from a copy of this definition.
+The canvas was assembled headlessly through the Rhino MCP (`g1_*` tools for placement and wiring; `run_csharp` for the script code, groups and save). The 3D Print group was added the same way, and the Kangaroo version was built the same way, starting from a copy of this definition. Later changes to the solver were pushed from `OrigamiSolver.cs` with `run_python` (Grasshopper's API: split the file on its `// ===== ` markers into the component's `ScriptSource`, register new inputs as `Param_ScriptVariable`, then clear the component's cached script assembly so the next solve recompiles).

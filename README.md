@@ -11,13 +11,13 @@ A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandagha
 | [`grasshopper/OrigamiSim.gh`](grasshopper/OrigamiSim.gh) | Main definition: solver, strain colours, 3D Print export. |
 | [`grasshopper/OrigamiSim_Kangaroo.gh`](grasshopper/OrigamiSim_Kangaroo.gh) | Kangaroo2 version. |
 | `grasshopper/*.cs` | Source of the script components, for reading and diffing. |
-| [`grasshopper/examples/`](grasshopper/examples/) | `OrigamiExamples.3dm` with 10 ready-to-fold patterns, `Flower.3dm` (a curved-crease design), plus the scripts that built them. |
+| [`grasshopper/examples/`](grasshopper/examples/) | `OrigamiExamples.3dm` with 10 ready-to-fold patterns, `Flower.3dm` and `RotatingStar.3dm` (curved-crease designs), plus the scripts that built them. |
 
 ## Getting started
 
 1. Open `grasshopper/examples/OrigamiExamples.3dm` in Rhino 8.
 2. Open `grasshopper/OrigamiSim.gh` in Grasshopper.
-3. Hide every pattern except the one to fold, then drag **Fold**.
+3. Hide every pattern except the one to fold, then drag **Fold**. For the curved-crease files, set **Vertex Interval** to 2 and switch **Curved** on first.
 
 Full instructions, inputs, constants and troubleshooting: [`grasshopper/README.md`](grasshopper/README.md). Pattern list and layers: [`grasshopper/examples/README.md`](grasshopper/examples/README.md).
 

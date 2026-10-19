@@ -7,7 +7,8 @@ The raster is a square sheet drawn as a thin dark border, solid mountain curves 
 curves. The pattern is 4-fold rotationally symmetric, so the four rotations are merged, thinned to a
 skeleton, and ONE sector (one arm, one centre side, one valley arc, one apex) is written in sheet
 units (100 x 100, origin bottom-left). The builder rotates it four times. The valley arcs end free
-inside the sheet, as in the artwork; the solver keeps such creases, as the web app does.
+inside the sheet, as in the artwork; the solver keeps such creases, as the web app does. The builder's
+EXTEND_VALLEYS option extends each free end along its tangent to the mountain arm (see build_flower_3dm.py).
 """
 import sys, math, json
 import numpy as np
