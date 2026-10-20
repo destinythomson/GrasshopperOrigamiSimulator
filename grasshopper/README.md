@@ -14,6 +14,7 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 | `OrigamiPrint.cs` | The source of the Origami Print component (the 3D Print group). |
 | `OrigamiSim_Kangaroo.gh` | The Kangaroo2 version of the definition. See [Kangaroo version](#kangaroo-version). |
 | `OrigamiKangaroo.cs`, `OrigamiKangarooReadout.cs` | The sources of its Origami Goals and Origami Readout components. |
+| `HuffmanTowerGenerator.py` | The source of the Python 3 component in the Huffman Tower generator group (see [Generated patterns](#generated-patterns)). |
 | `examples/stl_groove_lines.py`, `examples/crane_print_reference.json` | Recover crease lines from a printable-origami STL; the crane reference used to check the 3D Print output. |
 
 ## Open and run
@@ -25,6 +26,7 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 5. Set **Reset** to true to snap back to the flat sheet; set it to false to fold again.
 6. **Facet Strength** scales the stiffness of flat creases (Facet lines and triangulation diagonals): 1 is the web app's default (0.7); lower it for curved creases. It applies live, without a reset.
 7. **Vertex Interval** and **Curved** switch on the web app's curved-folding import (see [Curved creases](#curved-creases)). Both are off when the file opens, and the examples with straight creases do not need them.
+8. **Use generator** (in the *Pattern source* group) feeds the solver from the **Huffman Tower generator** group instead of the Rhino layers (see [Generated patterns](#generated-patterns)). It is off when the file opens.
 
 Without the timer, each change to an input runs one solve of 100 steps.
 
@@ -48,6 +50,7 @@ The definition reads the crease pattern straight from Rhino layers. Anything on 
 | `Facet` | F | Flat crease: held at 0° with the facet stiffness. Use it to split faces into triangles your way. |
 | `Cut` | C | The paper is cut along the line. The two sides become separate edges; the end of a slit inside the sheet stays connected. |
 | `Hinge` | H | An edge with no fold spring: the panels on either side rotate freely. |
+| `Seam` | S | A border line glued to another one, so a strip can close into a tube. See [Seams](#seams). |
 | `Labels` | — | Ignored. |
 | `Anchors` (optional) | Anchors | Points on vertices that should stay still. |
 
@@ -73,6 +76,18 @@ The web app opens its curved examples (Comet, Rotating Star, the Mitani designs)
 Info then reports `vertInt:<segments before>-><after>` and `curved:delaunayFlips=…,rulingFlips=…`. With the Flower and the Rotating Star examples the mesh is a set of cones with rulings radiating from the apex of each lobe, every crease folds the right way and the Rotating Star folds into its star; the Flower still settles about 50° short of its 150° targets (see the examples README). The crane and the other straight-crease examples are unchanged with both controls off.
 
 **Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does ([`js/model.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/model.js)). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
+
+## Seams
+
+A sheet cannot be drawn as a closed tube, so a pattern whose two ends meet in the folded model (Huffman's Hexagonal Column, any wrapped column) gets its end lines on the `Seam` layer. The solver treats them as Border lines and pairs them in order: the first with the second, the third with the fourth. Every vertex on one seam line is matched with the vertex at the same parameter on its partner (the ends must therefore be cut by the same creases and rulings, which a periodic pattern gives automatically), and each pair is joined by a spring of rest length 0.
+
+The spring force is `AXIAL / mean edge length × min(gap, GLUE_SAT)`, scaled by |Fold|, with beam-like damping. The saturation (`GLUE_SAT`, 1 % of the pattern radius) matters: a plain spring over a gap the size of the sheet would pull with a beam-sized force and crush the pattern at the first step; saturated, the ends are drawn together by a steady, crease-sized force and the tube closes as the creases fold (for the Huffman Tower between Fold 0.2 and 0.4). Glued pairs do not count toward strain. Info shows `seams` (pairs of lines), `seamNodes` (glued vertex pairs) and `seamGap` (their mean distance in model units); the build note shows `seamLines` and `glued`. The 3D Print group ignores the Seam layer. The web app has no equivalent (its sheets are always open), and with no Seam lines the solver is unchanged: the crane folds to the same numbers to the last digit.
+
+## Generated patterns
+
+The **Huffman Tower generator** group draws David Huffman's *Hexagonal Column with Cusps* (1978) with a Python 3 component that imports [`examples/huffman_tower.py`](examples/huffman_tower.py) from the folder next to the definition, so the `.gh` file has to stay inside this repository's `grasshopper` folder. Its sliders are **Cells** (6 for a hexagon), **Cap** (height of the flat cap bands), **P** (parabola segments per branch), **Parabola Angle** and **Circle Angle** (used when **Paper targets** is off), **Cap Line Angle** (used when **Cap Line Hinge** is off) and the **Seam** toggle. With **Paper targets** on, every crease segment gets the fold angle of the smooth solution in Mundilova, Demaine, Lang and Tachi's 2024 analysis (about 92–97° on the parabolas, 61–94° on the circles), and the segments are separate lines. The component outputs the curves on M, V, B, F, H and S plus the angle lists MA and VA; its *Generator Info* panel shows the counts and angles.
+
+The *Pattern source* group holds one Stream Filter per solver input, switched by **Use generator**: 0 is the Rhino layers (the pipelines), 1 is the generator. The solver's `MAin` and `VAin` inputs take a target angle per curve when the list is as long as the curve list; otherwise the angles come from the Rhino objects' `TargetAngleDeg` as before. The generator and `examples/HuffmanTower.3dm` (built by `build_huffman_tower_3dm.py` from the same module) give the same mesh: 546 nodes, 1045 faces, the same targets. See the [examples README](examples/README.md#huffman-tower-hexagonal-column-with-cusps) for the pattern and the fold.
 
 ## Constants
 
@@ -108,7 +123,8 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 | `meanAbsV` | Average vertex speed. Near zero means the model has settled. |
 | `finite` | False if the simulation blew up. |
 | `targets` | Mountain/valley creases per target angle at Fold = 1, mountains negative, for example `-180x50,45x8`. Use it to check that `TargetAngleDeg` was read. |
-| `note` | Build notes: `looseEnds` (creases ending inside the sheet), `vertInt` (segments before and after the Vertex Interval cut), `curved` (Delaunay and ruling flips made), `cutEdges`, `freeHinges`, `fixedNodes`. |
+| `seams`, `seamNodes`, `seamGap` | With Seam lines only: pairs of seam lines, glued vertex pairs and their mean distance in model units (see [Seams](#seams)). |
+| `note` | Build notes: `looseEnds` (creases ending inside the sheet), `vertInt` (segments before and after the Vertex Interval cut), `curved` (Delaunay and ruling flips made), `cutEdges`, `freeHinges`, `fixedNodes`, `seamLines` and `glued`. |
 
 ## 3D print
 

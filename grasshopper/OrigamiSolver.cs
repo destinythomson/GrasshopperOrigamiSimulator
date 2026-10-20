@@ -15,7 +15,15 @@
 //                    VertInt (double: every input segment longer than this is cut into equal pieces, model units;
 //                    0 = off; the web app's curved-folding importer uses globals.vertInt = 20 px),
 //                    Curved (bool: re-triangulate faces toward ruling-like diagonals as the web app's curved-folding
-//                    importer does, js/curvedFolding.js triangulatePolys; off = the web app's standard ear clipping)
+//                    importer does, js/curvedFolding.js triangulatePolys; off = the web app's standard ear clipping),
+//                    S (seam, List<Curve>): border lines glued to each other in pairs (1st to 2nd, 3rd to 4th ...)
+//                    so a strip can close into a tube,
+//                    MAin, VAin (List<double>, optional): target angle in degrees per M / V curve, used when the
+//                    list is as long as the curve list (for curves generated in Grasshopper); otherwise the
+//                    angles come from the referenced Rhino objects' User Text TargetAngleDeg. Each seam line is a border; its vertices are paired with the
+//                    vertices at the same parameter on its partner and joined by zero-rest-length springs whose
+//                    strength scales with |Fold|, so the sheet starts flat and the ends are drawn together as it
+//                    folds. No web app equivalent (its patterns are always open sheets).
 // Line types follow the web app's SVG import (js/pattern.js:136-153, 497-531):
 //   M/V crease to -/+180 deg; F flat crease (0 deg, facet stiffness); C cut: the sheet is split along it;
 //   H hinge ("U", unassigned): edge with no angular spring; B border (a border line inside the sheet acts as a hinge).
@@ -29,9 +37,11 @@
 
 // ===== SCRIPT (RunScript body) =====
 double tol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.001;
-List<double> MA = OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
-List<double> VA = OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
-OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, VertInt, Curved, tol);
+// target angles: the MA / VA inputs when they are connected and line up with M / V (curves made in Grasshopper
+// carry no User Text), otherwise each referenced Rhino object's TargetAngleDeg
+List<double> MA = (MAin != null && M != null && MAin.Count == M.Count) ? MAin : OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
+List<double> VA = (VAin != null && V != null && VAin.Count == V.Count) ? VAin : OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
+OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, VertInt, Curved, S, tol);
 if (r.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, r.Warning);
 Mesh = r.OutMesh;
 Strain = r.OutStrain;
@@ -51,6 +61,9 @@ static class OrigamiSim
   const int STEPS = 100;            // solver steps per solve    js/globals.js:90
   const double TARGET_DEG = 180.0;  // full fold when a line has no TargetAngleDeg; M = -180, V = +180   js/pattern.js:75,85
   const string ANGLE_KEY = "TargetAngleDeg";   // per-line User Text = the web app's stroke opacity x 180
+  const double GLUE_SAT = 0.01;     // Seam: the glue force stops growing beyond this gap (fraction of the pattern
+                                    // radius), so a far-apart seam is pulled with a steady, crease-sized force
+                                    // instead of a beam-sized one that would crush the sheet at the first step
   const double MERGE_REL = 0.005;   // vertices closer than this x the pattern radius are merged (web app: vertTol = 3 px,
                                     // js/globals.js:63, about 0.5 % of a typical SVG sheet)
   const double MASS = 1.0;          // every node has mass 1     js/node.js:205
@@ -89,6 +102,8 @@ static class OrigamiSim
     public int NC; public int[] C1, C2, C3, C4, CF1, CF2, CType;
     public double[] CK, CL0, CTarget, CTheta, CH1, CH2, CC1, CC2; public bool[] COn;
     public double FacetK;   // flat-crease stiffness multiplier the CK values were computed with
+    // glue springs (Seam input): zero rest length between paired seam nodes
+    public int NG; public int[] GA, GB; public double[] GK, GD; public int SeamPairs;
     // solver
     public double Dt, Fold; public int Frames; public long Steps;
   }
@@ -101,7 +116,7 @@ static class OrigamiSim
   // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
                            List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors,
-                           double facetK, double vertInt, bool curvedMode, double tol)
+                           double facetK, double vertInt, bool curvedMode, List<Curve> S, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     if (double.IsNaN(facetK) || facetK < 0) facetK = 1.0;   // unconnected or invalid: the web app default
@@ -119,6 +134,10 @@ static class OrigamiSim
     groups[KIND_F] = ToLines(F, null, tol, ref curved, angles[KIND_F], crv[KIND_F]);
     groups[KIND_C] = ToLines(C, null, tol, ref curved, angles[KIND_C], crv[KIND_C]);
     groups[KIND_H] = ToLines(H, null, tol, ref curved, angles[KIND_H], crv[KIND_H]);
+    // seams are borders that are also remembered as lines, in order, for pairing after the mesh is built
+    List<double> seamAng = new List<double>(); List<bool> seamCrv = new List<bool>();
+    List<Line> seams = ToLines(S, null, tol, ref curved, seamAng, seamCrv);
+    for (int i = 0; i < seams.Count; i++) { groups[KIND_B].Add(seams[i]); angles[KIND_B].Add(seamAng[i]); crv[KIND_B].Add(seamCrv[i]); }
     int nLines = 0;
     foreach (List<Line> g in groups) nLines += g.Count;
     List<Point3d> an = anchors != null ? new List<Point3d>(anchors) : new List<Point3d>();
@@ -134,11 +153,13 @@ static class OrigamiSim
     ulong key = Hash(groups, angles, an, tol, demo);
     key = Mix(key, BitConverter.DoubleToInt64Bits(vertInt));
     key = Mix(key, curvedMode ? 1 : 0);
+    key = Mix(key, 3000 + seams.Count);
+    foreach (Line ln in seams) { key = MixPt(key, ln.From, tol); key = MixPt(key, ln.To, tol); }
     SimState st;
     States.TryGetValue(id, out st);
     if (st == null || st.Key != key || reset)
     {
-      try { st = Build(groups, angles, crv, an, vertInt, curvedMode, tol); }
+      try { st = Build(groups, angles, crv, an, seams, vertInt, curvedMode, tol); }
       catch (Exception ex)
       {
         States.Remove(id);
@@ -300,6 +321,21 @@ static class OrigamiSim
       E[a] += e; E[b] += e;
     }
 
+    // glue springs (Seam): rest length 0, force k * min(gap, GLUE_SAT) toward the partner, strength and damping
+    // scaled by |Fold| so a flat sheet is left alone and its seam edges are drawn together as it folds;
+    // they do not count toward strain
+    double gf = Math.Abs(s.Fold);
+    if (gf > 0)
+      for (int gi = 0; gi < s.NG; gi++)
+      {
+        int a = s.GA[gi], b = s.GB[gi];
+        Vector3d dv = P[b] - P[a];
+        double len = dv.Length;
+        if (len <= 0) continue;
+        Vector3d f = dv * (s.GK[gi] * gf * Math.Min(len, GLUE_SAT) / len) + (Vl[b] - Vl[a]) * (s.GD[gi] * gf);
+        F[a] += f; F[b] -= f;
+      }
+
     // creases: torque k (target * fold - theta) turned into node forces; no crease damping
     // (the shader's "+ creaseMeta[1]*thetas[1]" damping term is commented out)
     double fold = s.Fold;
@@ -387,15 +423,23 @@ static class OrigamiSim
     }
     double meanStrain = s.N > 0 ? sumStrain / s.N : 0;
     if (double.IsNaN(meanStrain) || double.IsInfinity(meanStrain)) finite = false;
+    string seamText = "";
+    if (s.NG > 0)
+    {
+      double gap = 0;
+      for (int gi = 0; gi < s.NG; gi++) gap += s.Pos[s.GA[gi]].DistanceTo(s.Pos[s.GB[gi]]);
+      seamText = string.Format(System.Globalization.CultureInfo.InvariantCulture, " seams={0} seamNodes={1} seamGap={2:F4}",
+        s.SeamPairs, s.NG, gap / s.NG / s.Scale);   // mean distance between paired nodes, model units
+    }
 
     System.Globalization.CultureInfo ci = System.Globalization.CultureInfo.InvariantCulture;
     r.OutInfo = string.Format(ci,
       "nodes={0} beams={1} creases={2} mvCreases={3} faces={4} dt={5:E3} frame={6} steps={7} msPerSolve={8:F2} " +
-      "meanStrain%={9:F4} maxThetaErrDeg={10:F2} meanThetaErrDeg={18:F2} mvSenseOk={11}/{3} meanAbsV={12:E2} fold={13:F2} demo={14} finite={15} targets={17}{16}",
+      "meanStrain%={9:F4} maxThetaErrDeg={10:F2} meanThetaErrDeg={18:F2} mvSenseOk={11}/{3} meanAbsV={12:E2} fold={13:F2} demo={14} finite={15} targets={17}{19}{16}",
       s.N, s.NB, s.NC, mv, s.NF, s.Dt, s.Frames, s.Steps, ms,
       meanStrain, maxErr * 180.0 / Math.PI, mvOk, s.N > 0 ? sumV / s.N : 0, s.Fold, s.Demo,
       finite ? "true" : "false", string.IsNullOrEmpty(s.Note) ? "" : " note=" + s.Note,
-      HistText(hist), mv > 0 ? sumErr / mv * 180.0 / Math.PI : 0);
+      HistText(hist), mv > 0 ? sumErr / mv * 180.0 / Math.PI : 0, seamText);
     if (!finite) r.Warning = "Simulation diverged (non-finite positions). Toggle Reset; lower AXIAL or raise DAMP.";
     r.OutMesh = mesh;
     r.OutStrain = strain;
@@ -407,7 +451,7 @@ static class OrigamiSim
   // (replaces pattern.js cleanup + triangulation and model.js sync)
   // ---------------------------------------------------------------------------------------------
   static SimState Build(List<Line>[] groups, List<double>[] angles, List<bool>[] crv, List<Point3d> anchors,
-                        double vertInt, bool curvedMode, double tol)
+                        List<Line> seams, double vertInt, bool curvedMode, double tol)
   {
     List<string> notes = new List<string>();
 
@@ -455,6 +499,8 @@ static class OrigamiSim
       lines[i] = new Line(ToSim(lines[i].From, center, scale), ToSim(lines[i].To, center, scale));
     List<Point3d> simAnchors = new List<Point3d>();
     foreach (Point3d a in anchors) simAnchors.Add(ToSim(a, center, scale));
+    List<Line> simSeams = new List<Line>();
+    foreach (Line ln in seams) simSeams.Add(new Line(ToSim(ln.From, center, scale), ToSim(ln.To, center, scale)));
     double modelTol = tol;
     tol = Math.Max(tol * scale, MERGE_REL);
 
@@ -725,7 +771,48 @@ static class OrigamiSim
       }
     }
     if (nHinges > 0) notes.Add("freeHinges:" + nHinges);
-    // dt = 0.9 / (2 pi omega_max)                                    dynamicSolver.js:244-250
+    // dt = 0.9 / (2 pi omega_max) over beams and glue springs       dynamicSolver.js:244-250 (set below)
+
+    // glue springs between the nodes of paired seam lines (1st with 2nd, ...): a node within tolerance of a
+    // seam line is paired with the node at the nearest parameter on its partner. k = AXIAL / mean beam length,
+    // damping as for a beam of that length; both are scaled by |Fold| in Step.
+    List<int> ga = new List<int>(), gb = new List<int>();
+    int seamPairs = 0;
+    double meanL0 = 0;
+    for (int bi2 = 0; bi2 < NB; bi2++) meanL0 += st.BL0[bi2];
+    meanL0 = NB > 0 ? meanL0 / NB : 1.0;
+    double seamTol = Math.Max(2 * tol, 1e-9);
+    for (int si = 0; si + 1 < simSeams.Count; si += 2)
+    {
+      Line la = simSeams[si], lb = simSeams[si + 1];
+      List<KeyValuePair<double, int>> na = SeamNodes(la, st.Pos, N, seamTol), nb2 = SeamNodes(lb, st.Pos, N, seamTol);
+      if (na.Count == 0 || nb2.Count == 0) continue;
+      seamPairs++;
+      bool[] usedB = new bool[nb2.Count];
+      foreach (KeyValuePair<double, int> kv in na)
+      {
+        int best = -1; double bd = double.MaxValue;
+        for (int j = 0; j < nb2.Count; j++)
+        {
+          if (usedB[j]) continue;
+          double d = Math.Abs(nb2[j].Key - kv.Key);
+          if (d < bd) { bd = d; best = j; }
+        }
+        if (best < 0 || bd * lb.Length > seamTol * 5) continue;   // no partner at (nearly) the same parameter
+        usedB[best] = true;
+        ga.Add(kv.Value); gb.Add(nb2[best].Value);
+      }
+    }
+    st.NG = ga.Count; st.SeamPairs = seamPairs;
+    st.GA = ga.ToArray(); st.GB = gb.ToArray();
+    st.GK = new double[st.NG]; st.GD = new double[st.NG];
+    for (int gi = 0; gi < st.NG; gi++)
+    {
+      st.GK[gi] = AXIAL / meanL0;
+      st.GD[gi] = DAMP * 2.0 * Math.Sqrt(st.GK[gi] * MASS);
+      maxOmega = Math.Max(maxOmega, Math.Sqrt(st.GK[gi] / MASS));
+    }
+    if (simSeams.Count > 0) notes.Add("seamLines:" + simSeams.Count + ",glued:" + st.NG);
     st.Dt = 0.9 / (2.0 * Math.PI * maxOmega);
 
     int NC = creaseKeys.Count;
@@ -830,6 +917,23 @@ static class OrigamiSim
   static long HalfKey(int from, int to) { return ((long)from << 32) | (uint)to; }
 
   // kind of a mesh edge, looked up through vertex copies; edges not in the input are triangulation diagonals (F)
+  // nodes within tol of the seam line, with their parameter along it, sorted by parameter
+  static List<KeyValuePair<double, int>> SeamNodes(Line ln, Point3d[] pos, int n, double tol)
+  {
+    List<KeyValuePair<double, int>> res = new List<KeyValuePair<double, int>>();
+    double len = ln.Length;
+    if (len <= 0) return res;
+    for (int i = 0; i < n; i++)
+    {
+      double t = ln.ClosestParameter(pos[i]);
+      if (t < -tol / len || t > 1 + tol / len) continue;
+      if (ln.PointAt(Math.Max(0, Math.Min(1, t))).DistanceTo(pos[i]) > tol) continue;
+      res.Add(new KeyValuePair<double, int>(t, i));
+    }
+    res.Sort((a, b) => a.Key.CompareTo(b.Key));
+    return res;
+  }
+
   static int KindOf(long meshKey, Dictionary<long, int> edgeKind, List<int> origOf)
   {
     int lo = (int)(meshKey >> 32), hi = (int)(meshKey & 0xffffffffL);

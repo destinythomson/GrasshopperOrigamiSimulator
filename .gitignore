@@ -7,3 +7,4 @@ todo.rtf
 
 # Planning records (kept locally, not in the repo)
 plans/
+__pycache__/
