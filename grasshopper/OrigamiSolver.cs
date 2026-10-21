@@ -27,7 +27,7 @@
 // Line types follow the web app's SVG import (js/pattern.js:136-153, 497-531):
 //   M/V crease to -/+180 deg; F flat crease (0 deg, facet stiffness); C cut: the sheet is split along it;
 //   H hinge ("U", unassigned): edge with no angular spring; B border (a border line inside the sheet acts as a hinge).
-// Component outputs: Mesh (plain folded mesh), Strain (per-node %, List<double>), Info (string)
+// Component outputs: Mesh (folded mesh, vertices split along M/V creases), Strain (per mesh vertex %, List<double>), Info (string)
 // Strain colours are applied by the separate StrainColour.cs component.
 
 // ===== USING =====
@@ -382,6 +382,63 @@ static class OrigamiSim
     s.Steps++;
   }
 
+  // Adds the faces to mesh, giving a node one mesh vertex per fan of faces that is connected without crossing a
+  // mountain/valley crease (union-find over face corners). strain gets the node's value for every copy.
+  static void SplitAtCreases(SimState s, Rhino.Geometry.Mesh mesh, List<double> strain)
+  {
+    int NF = s.NF, N = s.N;
+    HashSet<long> hard = new HashSet<long>();
+    for (int c = 0; c < s.NC; c++)
+      if (s.CType[c] == 1) hard.Add(EdgeKey(Math.Min(s.C3[c], s.C4[c]), Math.Max(s.C3[c], s.C4[c])));
+    int[] root = new int[NF * 3];
+    for (int i = 0; i < root.Length; i++) root[i] = i;
+    Func<int, int> find = null;
+    find = x => { while (root[x] != x) { root[x] = root[root[x]]; x = root[x]; } return x; };
+    Dictionary<long, int[]> seen = new Dictionary<long, int[]>();   // edge -> {slot of lo, slot of hi} of the first face
+    for (int f = 0; f < NF; f++)
+    {
+      int[] fn = { s.FA[f], s.FB[f], s.FC[f] };
+      for (int k = 0; k < 3; k++)
+      {
+        int a = fn[k], b = fn[(k + 1) % 3];
+        int sa = 3 * f + k, sb = 3 * f + (k + 1) % 3;
+        long key = EdgeKey(Math.Min(a, b), Math.Max(a, b));
+        int[] first;
+        if (!seen.TryGetValue(key, out first)) { seen[key] = a < b ? new[] { sa, sb } : new[] { sb, sa }; continue; }
+        if (hard.Contains(key)) continue;
+        int slo = a < b ? sa : sb, shi = a < b ? sb : sa;
+        root[find(slo)] = find(first[0]);
+        root[find(shi)] = find(first[1]);
+      }
+    }
+    int[] vert = new int[NF * 3];        // mesh vertex of each root slot
+    for (int i = 0; i < vert.Length; i++) vert[i] = -1;
+    bool[] nodeUsed = new bool[N];
+    List<int> extraNode = new List<int>();
+    int[,] faceV = new int[NF, 3];
+    for (int f = 0; f < NF; f++)
+    {
+      int[] fn = { s.FA[f], s.FB[f], s.FC[f] };
+      for (int k = 0; k < 3; k++)
+      {
+        int r = find(3 * f + k);
+        if (vert[r] < 0)
+        {
+          int node = fn[k];
+          if (!nodeUsed[node]) { nodeUsed[node] = true; vert[r] = node; }
+          else { vert[r] = N + extraNode.Count; extraNode.Add(node); }
+        }
+        faceV[f, k] = vert[r];
+      }
+    }
+    foreach (int node in extraNode)
+    {
+      mesh.Vertices.Add(mesh.Vertices.Point3dAt(node));   // double precision, so the copy is exact
+      strain.Add(strain[node]);
+    }
+    for (int f = 0; f < NF; f++) mesh.Faces.AddFace(faceV[f, 0], faceV[f, 1], faceV[f, 2]);
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Outputs: plain mesh, strain list, info string
   // ---------------------------------------------------------------------------------------------
@@ -403,7 +460,10 @@ static class OrigamiSim
       sumStrain += e;
       sumV += s.Vel[i].Length;
     }
-    for (int f = 0; f < s.NF; f++) mesh.Faces.AddFace(s.FA[f], s.FB[f], s.FC[f]);
+    // Vertices are split along mountain/valley creases (as Rhino's angle weld does to a mesh imported from the web
+    // app): vertex normals then average only within a panel, so curved panels shade smoothly and folds stay sharp.
+    // Vertex i < N is node i; the extra copies follow, and the Strain list has one value per mesh vertex.
+    SplitAtCreases(s, mesh, strain);
     mesh.Normals.ComputeNormals();
 
     double maxErr = 0, sumErr = 0; int mv = 0, mvOk = 0;

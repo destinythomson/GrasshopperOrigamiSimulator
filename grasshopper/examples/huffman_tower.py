@@ -194,7 +194,7 @@ class _Collector(object):
         self.layers[layer].append({"pts": pts, "angle": angle})
 
 
-def build(cells=6, cap=1.6, P=12, fan=(3, 1), ruling_every=2, targets="paper", rulings="ode", cap_line="hinge",
+def build(cells=6, cap=1.6, P=12, fan=(3, 1), ruling_every=2, targets=(54.0, 54.0), rulings="ode", cap_line="hinge",
           cap_line_angle=None, cap_angle=60.0, seam=False):
     """Build the pattern. See the module docstring.
 

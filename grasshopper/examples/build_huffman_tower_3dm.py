@@ -4,8 +4,9 @@ keys of the other examples (Pattern, CreaseType, TargetAngleDeg, Source). Fold i
 Curved off: the pattern carries its own rulings as Facet lines.
 
 Parameters can be overridden by defining *_OVERRIDE names before exec-ing this file (as the MCP runs do):
-CELLS (6), CAP (1.6), P (12), TARGETS ("paper" or (parabola_deg, circle_deg)), RULINGS ("ode"|"linear"),
-CAP_LINE ("hinge"|"valley"|"mountain"), CAP_LINE_ANGLE, SEAM (False), MODULE_DIR (folder of huffman_tower.py)."""
+CELLS (6), CAP (1.6), P (12), TARGETS ((54, 54): the web app's huffmanTower.svg angles, or "paper" for the 2024
+analysis' per-segment angles), RULINGS ("ode"|"linear"), CAP_LINE ("hinge"|"valley"|"mountain"), CAP_LINE_ANGLE,
+SEAM (True), MODULE_DIR (folder of huffman_tower.py)."""
 import os, sys
 import Rhino
 import Rhino.Geometry as rg
@@ -15,11 +16,11 @@ g = globals()
 CELLS = g.get("CELLS_OVERRIDE", 6)
 CAP = g.get("CAP_OVERRIDE", 1.6)
 P = g.get("P_OVERRIDE", 12)
-TARGETS = g.get("TARGETS_OVERRIDE", "paper")
+TARGETS = g.get("TARGETS_OVERRIDE", (54.0, 54.0))
 RULINGS = g.get("RULINGS_OVERRIDE", "ode")
 CAP_LINE = g.get("CAP_LINE_OVERRIDE", "hinge")
 CAP_LINE_ANGLE = g.get("CAP_LINE_ANGLE_OVERRIDE", None)
-SEAM = g.get("SEAM_OVERRIDE", False)
+SEAM = g.get("SEAM_OVERRIDE", True)
 MODULE_DIR = g.get("MODULE_DIR_OVERRIDE", os.path.dirname(os.path.abspath(__file__)) if "__file__" in g else None)
 
 if MODULE_DIR and MODULE_DIR not in sys.path: sys.path.insert(0, MODULE_DIR)

@@ -29,8 +29,8 @@ importlib.reload(huffman_tower)
 cells = int(Cells) if Cells is not None else 6
 cap = float(Cap) if Cap is not None else 1.6
 P = int(P) if P is not None else 12
-paper = bool(Paper) if Paper is not None else True
-targets = "paper" if paper else (float(ParDeg) if ParDeg is not None else 90.0, float(CirDeg) if CirDeg is not None else 77.0)
+paper = bool(Paper) if Paper is not None else False
+targets = "paper" if paper else (float(ParDeg) if ParDeg is not None else 54.0, float(CirDeg) if CirDeg is not None else 54.0)
 cap_line = "hinge" if (Hinge if Hinge is not None else True) else "valley"
 out = huffman_tower.build(cells=cells, cap=cap, P=P, targets=targets, cap_line=cap_line,
                           cap_line_angle=(float(CapLineDeg) if CapLineDeg is not None else None),
