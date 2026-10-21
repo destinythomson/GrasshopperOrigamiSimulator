@@ -12,10 +12,9 @@
 //                    (lines, polylines; curved segments are approximated), Fold (double), Reset (bool),
 //                    Anchors (List<Point3d>), FacetK (double: flat-crease stiffness x FACET, the web app's
 //                    Facet Crease Stiffness slider; 1 = the web app default),
-//                    VertInt (double: every input segment longer than this is cut into equal pieces, model units;
-//                    0 = off; the web app's curved-folding importer uses globals.vertInt = 20 px),
-//                    Curved (bool: re-triangulate faces toward ruling-like diagonals as the web app's curved-folding
-//                    importer does, js/curvedFolding.js triangulatePolys; off = the web app's standard ear clipping),
+//                    VertInt (double: border lines and curved creases are cut into pieces no longer than this
+//                    percentage of the pattern's longest side; 0 = off; the web app's curved-folding importer uses
+//                    globals.vertInt = 20 px on sheets of 600-800 px, about 3 %),
 //                    S (seam, List<Curve>): border lines glued to each other in pairs (1st to 2nd, 3rd to 4th ...)
 //                    so a strip can close into a tube,
 //                    MAin, VAin (List<double>, optional): target angle in degrees per M / V curve, used when the
@@ -41,7 +40,7 @@ double tol = (RhinoDocument != null) ? RhinoDocument.ModelAbsoluteTolerance : 0.
 // carry no User Text), otherwise each referenced Rhino object's TargetAngleDeg
 List<double> MA = (MAin != null && M != null && MAin.Count == M.Count) ? MAin : OrigamiSim.TargetAngles(Component, "M", M, RhinoDocument);
 List<double> VA = (VAin != null && V != null && VAin.Count == V.Count) ? VAin : OrigamiSim.TargetAngles(Component, "V", V, RhinoDocument);
-OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, VertInt, Curved, S, tol);
+OrigamiSim.Result r = OrigamiSim.Run(Component.InstanceGuid, M, V, B, F, C, H, MA, VA, Fold, Reset, Anchors, FacetK, VertInt, S, tol);
 if (r.Warning != null) Component.AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, r.Warning);
 Mesh = r.OutMesh;
 Strain = r.OutStrain;
@@ -116,7 +115,7 @@ static class OrigamiSim
   // MA, VA: target angle in degrees per M / V curve (TargetAngles); null or missing entries -> TARGET_DEG
   public static Result Run(Guid id, List<Curve> M, List<Curve> V, List<Curve> B, List<Curve> F, List<Curve> C,
                            List<Curve> H, List<double> MA, List<double> VA, double fold, bool reset, List<Point3d> anchors,
-                           double facetK, double vertInt, bool curvedMode, List<Curve> S, double tol)
+                           double facetK, double vertInt, List<Curve> S, double tol)
   {
     if (!(tol > 0)) tol = 1e-6;
     if (double.IsNaN(facetK) || facetK < 0) facetK = 1.0;   // unconnected or invalid: the web app default
@@ -152,14 +151,13 @@ static class OrigamiSim
 
     ulong key = Hash(groups, angles, an, tol, demo);
     key = Mix(key, BitConverter.DoubleToInt64Bits(vertInt));
-    key = Mix(key, curvedMode ? 1 : 0);
     key = Mix(key, 3000 + seams.Count);
     foreach (Line ln in seams) { key = MixPt(key, ln.From, tol); key = MixPt(key, ln.To, tol); }
     SimState st;
     States.TryGetValue(id, out st);
     if (st == null || st.Key != key || reset)
     {
-      try { st = Build(groups, angles, crv, an, seams, vertInt, curvedMode, tol); }
+      try { st = Build(groups, angles, crv, an, seams, vertInt, tol); }
       catch (Exception ex)
       {
         States.Remove(id);
@@ -511,7 +509,7 @@ static class OrigamiSim
   // (replaces pattern.js cleanup + triangulation and model.js sync)
   // ---------------------------------------------------------------------------------------------
   static SimState Build(List<Line>[] groups, List<double>[] angles, List<bool>[] crv, List<Point3d> anchors,
-                        List<Line> seams, double vertInt, bool curvedMode, double tol)
+                        List<Line> seams, double vertInt, double tol)
   {
     List<string> notes = new List<string>();
 
@@ -526,15 +524,19 @@ static class OrigamiSim
 
     // 1a. vertex interval (curvedFolding.js parseLine/parsePolyline: border lines are cut every globals.vertInt = 20 px,
     //     and divPathC flattens curves to chords no longer than it; straight creases, facets, hinges and cuts keep their
-    //     length). Border segments and pieces of curved lines longer than VertInt are cut into equal pieces, so the
-    //     rulings found in 7a have vertices to end on along the border and the curves.
+    //     length). Border segments and pieces of curved lines longer than the interval are cut into equal pieces, so
+    //     the rulings found in 7a have vertices to end on along the border and the curves. VertInt is a percentage of
+    //     the pattern's longest side, so the same value works for a 100-unit sheet and a 30,000-unit one.
     if (vertInt > 0)
     {
+      BoundingBox bb0 = BoundingBox.Empty;
+      foreach (Line ln in lines) { bb0.Union(ln.From); bb0.Union(ln.To); }
+      double step = vertInt / 100.0 * Math.Max(bb0.Max.X - bb0.Min.X, bb0.Max.Y - bb0.Min.Y);
       List<Line> l2 = new List<Line>(); List<int> k2 = new List<int>(); List<double> a2 = new List<double>(); List<bool> c2 = new List<bool>();
       for (int i = 0; i < n; i++)
       {
         Line ln = lines[i];
-        int pieces = (kinds[i] == KIND_B || crvs[i]) ? (int)Math.Ceiling(ln.Length / vertInt - 1e-9) : 1;
+        int pieces = (kinds[i] == KIND_B || crvs[i]) ? (int)Math.Ceiling(ln.Length / step - 1e-9) : 1;
         if (pieces < 1) pieces = 1;
         for (int k = 0; k < pieces; k++)
         {
@@ -683,21 +685,23 @@ static class OrigamiSim
 
     // 7. triangulate: triangles kept, quads split on the shorter diagonal, larger polygons ear-clipped
     //    (pattern.js:984-1135); new diagonals become flat creases
-    // 7a. Curved: the web app's curved-folding importer (curvedFolding.js triangulatePolys) triangulates every face
-    //     with more than 4 vertices by a constrained Delaunay triangulation (cdt2d) and then flips diagonals toward
-    //     ruling-like ones (Model.orthogonal). Here the ear-clipped face is first flipped to the Delaunay triangulation
-    //     (Lawson flips, which converge to the same CDT) and then through the same orthogonal() flip loop.
+    // 7a. The web app's curved-folding importer (curvedFolding.js triangulatePolys) triangulates every face with more
+    //     than 4 vertices by a constrained Delaunay triangulation (cdt2d) and then flips diagonals toward ruling-like
+    //     ones (Model.orthogonal). Here the ear-clipped face is first flipped to the Delaunay triangulation (Lawson
+    //     flips, which converge to the same CDT) and then through the same orthogonal() flip loop. This runs for every
+    //     pattern: on the straight-crease examples it makes no flip (their faces have at most 4 vertices) except the
+    //     Popup, where 4 Delaunay flips leave the fold unchanged, so there is no separate standard mode.
     List<int[]> tris = new List<int[]>();
     int[] flipStats = new int[2];
     foreach (List<int> f in faces)
     {
-      if (!curvedMode || f.Count <= 4) { Triangulate(f, verts, X, Y, tris, areaEps); continue; }
+      if (f.Count <= 4) { Triangulate(f, verts, X, Y, tris, areaEps); continue; }
       List<int[]> ft = new List<int[]>();
       Triangulate(f, verts, X, Y, ft, areaEps);
       RulingFlips(ft, X, Y, edgeKind, edgeCurve, areaEps, flipStats);
       tris.AddRange(ft);
     }
-    if (curvedMode) notes.Add("curved:delaunayFlips=" + flipStats[0] + ",rulingFlips=" + flipStats[1]);
+    if (flipStats[0] + flipStats[1] > 0) notes.Add("flips:delaunay=" + flipStats[0] + ",ruling=" + flipStats[1]);
     if (tris.Count == 0) throw new Exception("triangulation produced no triangles");
 
     // 7b. cuts (pattern.js splitCuts): around every vertex on a cut, the triangle fan is split into groups
@@ -1139,7 +1143,7 @@ static class OrigamiSim
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Curved mode: edge flips on one face's triangle mesh (curvedFolding.js, class Model + triangulatePolys)
+  // Ruling flips: edge flips on one face's triangle mesh (curvedFolding.js, class Model + triangulatePolys)
   // ---------------------------------------------------------------------------------------------
   // Triangles are CCW. Half-edge u->v belongs to the triangle whose CCW order runs u->v; the triangle on the other
   // side owns v->u. Edges of the input (edgeKind) are never flipped; "curve" edges (edgeCurve) stop the walk around

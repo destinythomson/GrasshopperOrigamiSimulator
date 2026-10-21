@@ -26,7 +26,7 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 4. Drag **Fold**: 0 is flat, 1 is fully folded, −1 is fully folded with mountains and valleys swapped.
 5. Set **Reset** to true to snap back to the flat sheet; set it to false to fold again.
 6. **Facet Strength** scales the stiffness of flat creases (Facet lines and triangulation diagonals): 1 is the web app's default (0.7); lower it for curved creases. It applies live, without a reset.
-7. **Vertex Interval** and **Curved** switch on the web app's curved-folding import (see [Curved creases](#curved-creases)). Both are off when the file opens, and the examples with straight creases do not need them.
+7. **Vertex Interval** switches on the web app's curved-folding subdivision (see [Curved creases](#curved-creases)). It is 0 when the file opens, and the examples with straight creases do not need it.
 
 Without the timer, each change to an input runs one solve of 100 steps.
 
@@ -35,8 +35,7 @@ Without the timer, each change to an input runs one solve of 100 steps.
 | Fold | Fold | 0 | Fraction of each crease's target angle: 0 flat, 1 folded, −1 folded with mountains and valleys swapped. |
 | Reset | Reset | false | While true, the sheet is held flat and the model is rebuilt. |
 | Facet Strength | FacetK | 1 | Flat-crease stiffness, × the web app's `FACET` (0.7). Applies live. |
-| Vertex Interval | VertInt | 0 (off) | Border lines and curved creases longer than this (model units) are cut into equal pieces before triangulation; the web app's curved importer uses 20 px on sheets of 600–800 px, so about 2 on a 100-unit sheet. Straight creases keep their length, as there. |
-| Curved | Curved | false | Re-triangulates every face toward ruling-like diagonals, as the web app's curved-folding importer does. |
+| Vertex Interval | VertInt | 0 (off) | Border lines and curved creases are cut into pieces no longer than this percentage of the pattern's longest side before triangulation; the web app's curved importer uses 20 px on sheets of 600–800 px, so about 2–3. Straight creases keep their length, as there. The same value works at any drawing scale. |
 
 ## Use your own crease pattern
 
@@ -68,12 +67,12 @@ Faces with more than three sides are triangulated, and the added diagonals act a
 
 **Curved creases.** Draw them as polylines (or curves, which are approximated). The flat regions between curved creases have to bend into cones and cylinders, and the triangulation diagonals resist that with the facet stiffness, so lower **Facet Strength** (the web app's Facet Crease Stiffness slider). Full folds (180°) are impossible on a curve, so give the creases a `TargetAngleDeg`.
 
-The web app opens its curved examples (Comet, Rotating Star, the Mitani designs) through a separate curved-folding importer ([`js/curvedFolding.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/curvedFolding.js)), not the standard one this port was made from, and through the standard importer the same files tangle or stay flat. The two controls reproduce that importer:
+The web app opens its curved examples (Comet, Rotating Star, the Mitani designs) through a separate curved-folding importer ([`js/curvedFolding.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/curvedFolding.js)), not the standard one this port was made from, and through the standard importer the same files tangle or stay flat. Vertex Interval and the solver's triangulation reproduce that importer:
 
-- **Vertex Interval** cuts the border and every curved crease into pieces no longer than the interval (the importer cuts borders every `vertInt` = 20 px and flattens Bezier curves to chords no longer than that; straight creases, facets, hinges and cuts stay whole). This gives the rulings vertices to end on along the border and the curves.
-- **Curved** triangulates each face with more than four vertices as the importer does: a constrained Delaunay triangulation first (the importer calls `cdt2d`; here the ear-clipped face is flipped to the same triangulation), then the importer's flip loop (`Model.orthogonal`, `edgeSwap`): among the diagonals whose quad is convex and whose new end vertices carry fewer than four diagonals, flip the one that most improves the symmetry of the diagonal with respect to the crease directions on either side of its ends, until no flip improves (at most 1000 per face). A diagonal that makes equal angles with the incoming and outgoing crease at a vertex is perpendicular to a smooth curve there, which is what a ruling of a cone or cylinder looks like. Only curved mountains and valleys count as crease directions, as in the importer (its `CM`/`CV` assignments): here a crease is curved when it comes from a curve or a polyline with more than one segment, so a plain Line is not.
+- **Vertex Interval** cuts the border and every curved crease into pieces no longer than the given percentage of the pattern's longest side (the importer cuts borders every `vertInt` = 20 px and flattens Bezier curves to chords no longer than that; straight creases, facets, hinges and cuts stay whole). This gives the rulings vertices to end on along the border and the curves.
+- Every face with more than four vertices is triangulated as the importer does: a constrained Delaunay triangulation first (the importer calls `cdt2d`; here the ear-clipped face is flipped to the same triangulation), then the importer's flip loop (`Model.orthogonal`, `edgeSwap`): among the diagonals whose quad is convex and whose new end vertices carry fewer than four diagonals, flip the one that most improves the symmetry of the diagonal with respect to the crease directions on either side of its ends, until no flip improves (at most 1000 per face). A diagonal that makes equal angles with the incoming and outgoing crease at a vertex is perpendicular to a smooth curve there, which is what a ruling of a cone or cylinder looks like. Only curved mountains and valleys count as crease directions, as in the importer (its `CM`/`CV` assignments): here a crease is curved when it comes from a curve or a polyline with more than one segment, so a plain Line is not.
 
-Info then reports `vertInt:<segments before>-><after>` and `curved:delaunayFlips=…,rulingFlips=…`. With the Flower and the Rotating Star examples the mesh is a set of cones with rulings radiating from the apex of each lobe, every crease folds the right way and the Rotating Star folds into its star; the Flower still settles about 50° short of its 150° targets (see the examples README). The crane and the other straight-crease examples are unchanged with both controls off.
+Info then reports `vertInt:<segments before>-><after>` and, when any diagonal was flipped, `flips:delaunay=…,ruling=…`. With the Flower and the Rotating Star examples the mesh is a set of cones with rulings radiating from the apex of each lobe, every crease folds the right way and the Rotating Star folds into its star; the Flower still settles about 50° short of its 150° targets (see the examples README). This triangulation always runs; on the ten straight-crease examples it flips nothing (their faces have at most four vertices) except the Popup, where four diagonals of a many-sided face flip and the fold comes out the same, so there is no separate standard mode to switch.
 
 **Scale.** Before simulating, the solver centres the pattern and scales it to a radius of 1, as the web app does ([`js/model.js`](https://github.com/amandaghassaei/OrigamiSimulator/blob/7855983a613c879c171b2b1557f8cd102d2640cf/js/model.js)). The Mesh output is scaled back to model units. Without this, the balance between edge, face and crease springs would change with the drawing units, and the same pattern would fold differently at 1 unit and at 100.
 
@@ -124,7 +123,7 @@ The stiffness settings are constants at the top of the `OrigamiSim` class inside
 | `finite` | False if the simulation blew up. |
 | `targets` | Mountain/valley creases per target angle at Fold = 1, mountains negative, for example `-180x50,45x8`. Use it to check that `TargetAngleDeg` was read. |
 | `seams`, `seamNodes`, `seamGap` | With Seam lines only: pairs of seam lines, glued vertex pairs and their mean distance in model units (see [Seams](#seams)). |
-| `note` | Build notes: `looseEnds` (creases ending inside the sheet), `vertInt` (segments before and after the Vertex Interval cut), `curved` (Delaunay and ruling flips made), `cutEdges`, `freeHinges`, `fixedNodes`, `seamLines` and `glued`. |
+| `note` | Build notes: `looseEnds` (creases ending inside the sheet), `vertInt` (segments before and after the Vertex Interval cut), `flips` (Delaunay and ruling flips made), `cutEdges`, `freeHinges`, `fixedNodes`, `seamLines` and `glued`. |
 
 ## 3D print
 
@@ -244,7 +243,7 @@ The Miura picture below was taken with the earlier goal weights, when the two di
 
 - **The mesh explodes or `finite=false`.** Toggle Reset. Then lower `AXIAL` or `CREASE`, or raise `DAMP`.
 - **Nothing folds or `build failed: no closed faces`.** Lines probably do not meet, or the Border is missing. Check them with `_Intersect` or by raising the document tolerance.
-- **Curved creases stop well short of their target, or the pattern tangles.** Set **Vertex Interval** to about 2 % of the sheet, switch **Curved** on, lower **Facet Strength** and ramp Fold slowly; see *Curved creases* above.
+- **Curved creases stop well short of their target, or the pattern tangles.** Set **Vertex Interval** to about 2, lower **Facet Strength** and ramp Fold slowly; see *Curved creases* above.
 - **My pattern is ignored and the demo shows.** Check the layer names (`Border`, `Mountain`, `Valley`, `Facet`, `Cut`, `Hinge`) and that the objects are not hidden.
 - **It folds the wrong way.** Swap the M and V inputs, or set Fold negative.
 - **A pattern that folds in the web app tangles here.** Check that its partial folds carry `TargetAngleDeg` (the `targets` field in Info lists the angles that were read), and fold it gradually: the web app's crane also tangles if Fold jumps straight from 0 to 1.

@@ -18,7 +18,7 @@ A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandagha
 
 1. Open `grasshopper/examples/OrigamiExamples.3dm` in Rhino 8.
 2. Open `grasshopper/OrigamiSim.gh` in Grasshopper.
-3. Hide every pattern except the one to fold, then drag **Fold**. For the Flower and Rotating Star, set **Vertex Interval** to 2 and switch **Curved** on first; the Huffman Tower folds with both off, and `grasshopper/HuffmanTower.gh` builds it from sliders instead of a drawing.
+3. Hide every pattern except the one to fold, then drag **Fold**. For the Flower and Rotating Star, set **Vertex Interval** to 2 first; the Huffman Tower folds with it at 0, and `grasshopper/HuffmanTower.gh` builds it from sliders instead of a drawing.
 
 Full instructions, inputs, constants and troubleshooting: [`grasshopper/README.md`](grasshopper/README.md). Pattern list and layers: [`grasshopper/examples/README.md`](grasshopper/examples/README.md).
 
