@@ -9,6 +9,7 @@ A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandagha
 | Path | What it is |
 |---|---|
 | [`grasshopper/OrigamiSim.gh`](grasshopper/OrigamiSim.gh) | Main definition: solver, strain colours, 3D Print export. |
+| [`grasshopper/HuffmanTower.gh`](grasshopper/HuffmanTower.gh) | Huffman's Hexagonal Column with Cusps, generated from sliders and folded with the same solver. |
 | [`grasshopper/OrigamiSim_Kangaroo.gh`](grasshopper/OrigamiSim_Kangaroo.gh) | Kangaroo2 version. |
 | `grasshopper/*.cs` | Source of the script components, for reading and diffing. |
 | [`grasshopper/examples/`](grasshopper/examples/) | `OrigamiExamples.3dm` with 10 ready-to-fold patterns, `Flower.3dm` and `RotatingStar.3dm` (curved-crease designs), `HuffmanTower.3dm` (Huffman's Hexagonal Column with Cusps, closed with the solver's Seam layer), plus the scripts that built them. |
@@ -17,7 +18,7 @@ A Grasshopper (Rhino 8) port of [Origami Simulator](https://github.com/amandagha
 
 1. Open `grasshopper/examples/OrigamiExamples.3dm` in Rhino 8.
 2. Open `grasshopper/OrigamiSim.gh` in Grasshopper.
-3. Hide every pattern except the one to fold, then drag **Fold**. For the Flower and Rotating Star, set **Vertex Interval** to 2 and switch **Curved** on first; the Huffman Tower folds with both off, and its generator group on the canvas rebuilds it from sliders.
+3. Hide every pattern except the one to fold, then drag **Fold**. For the Flower and Rotating Star, set **Vertex Interval** to 2 and switch **Curved** on first; the Huffman Tower folds with both off, and `grasshopper/HuffmanTower.gh` builds it from sliders instead of a drawing.
 
 Full instructions, inputs, constants and troubleshooting: [`grasshopper/README.md`](grasshopper/README.md). Pattern list and layers: [`grasshopper/examples/README.md`](grasshopper/examples/README.md).
 

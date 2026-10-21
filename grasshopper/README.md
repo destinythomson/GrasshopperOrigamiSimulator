@@ -9,12 +9,13 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 | File | What it is |
 |---|---|
 | `OrigamiSim.gh` | The definition. Open this. |
+| `HuffmanTower.gh` | A separate definition for Huffman's Hexagonal Column with Cusps: the same solver fed by a generator component instead of Rhino layers. See [Huffman Tower definition](#huffman-tower-definition). |
 | `OrigamiSolver.cs` | The solver source that lives inside the Origami Solver component, kept here so it can be read and diffed. |
 | `StrainColour.cs` | The source of the Strain Colours component. |
 | `OrigamiPrint.cs` | The source of the Origami Print component (the 3D Print group). |
 | `OrigamiSim_Kangaroo.gh` | The Kangaroo2 version of the definition. See [Kangaroo version](#kangaroo-version). |
 | `OrigamiKangaroo.cs`, `OrigamiKangarooReadout.cs` | The sources of its Origami Goals and Origami Readout components. |
-| `HuffmanTowerGenerator.py` | The source of the Python 3 component in the Huffman Tower generator group (see [Generated patterns](#generated-patterns)). |
+| `HuffmanTowerGenerator.py` | The source of the generator component in `HuffmanTower.gh`. |
 | `examples/stl_groove_lines.py`, `examples/crane_print_reference.json` | Recover crease lines from a printable-origami STL; the crane reference used to check the 3D Print output. |
 
 ## Open and run
@@ -26,7 +27,6 @@ Every vertex is a particle with mass 1. Every edge is a stiff spring (a "beam").
 5. Set **Reset** to true to snap back to the flat sheet; set it to false to fold again.
 6. **Facet Strength** scales the stiffness of flat creases (Facet lines and triangulation diagonals): 1 is the web app's default (0.7); lower it for curved creases. It applies live, without a reset.
 7. **Vertex Interval** and **Curved** switch on the web app's curved-folding import (see [Curved creases](#curved-creases)). Both are off when the file opens, and the examples with straight creases do not need them.
-8. **Use generator** (in the *Pattern source* group) feeds the solver from the **Huffman Tower generator** group instead of the Rhino layers (see [Generated patterns](#generated-patterns)). It is off when the file opens.
 
 Without the timer, each change to an input runs one solve of 100 steps.
 
@@ -83,11 +83,11 @@ A sheet cannot be drawn as a closed tube, so a pattern whose two ends meet in th
 
 The spring force is `AXIAL / mean edge length × min(gap, GLUE_SAT)`, scaled by |Fold|, with beam-like damping. The saturation (`GLUE_SAT`, 1 % of the pattern radius) matters: a plain spring over a gap the size of the sheet would pull with a beam-sized force and crush the pattern at the first step; saturated, the ends are drawn together by a steady, crease-sized force and the tube closes as the creases fold (for the Huffman Tower between Fold 0.2 and 0.4). With the Huffman Tower's 54° targets the strip also closes on its own through its 60° cap creases, as it does in the web app, only more slowly; the seam makes the closure exact. Glued pairs do not count toward strain. Info shows `seams` (pairs of lines), `seamNodes` (glued vertex pairs) and `seamGap` (their mean distance in model units); the build note shows `seamLines` and `glued`. The 3D Print group ignores the Seam layer. The web app has no equivalent (its sheets are always open), and with no Seam lines the solver is unchanged: the crane folds to the same numbers to the last digit.
 
-## Generated patterns
+## Huffman Tower definition
 
-The **Huffman Tower generator** group draws David Huffman's *Hexagonal Column with Cusps* (1978) with a Python 3 component that imports [`examples/huffman_tower.py`](examples/huffman_tower.py) from the folder next to the definition, so the `.gh` file has to stay inside this repository's `grasshopper` folder. Its sliders are **Cells** (6 for a hexagon), **Cap** (height of the flat cap bands), **P** (parabola segments per branch), **Parabola Angle** and **Circle Angle** (54° each when the file opens: the angles of the web app's `huffmanTower.svg`, whose crease strokes have opacity 0.3), **Cap Line Angle** (used when **Cap Line Hinge** is off) and the **Seam** toggle. With **Paper targets** on, every crease segment instead gets the fold angle of the smooth solution in Mundilova, Demaine, Lang and Tachi's 2024 analysis (about 92–97° on the parabolas, 61–94° on the circles), and the segments are separate lines; that folds the column much deeper at the waist than the web app's version (see the examples README). The component outputs the curves on M, V, B, F, H and S plus the angle lists MA and VA; its *Generator Info* panel shows the counts and angles.
+`HuffmanTower.gh` is a second definition with the same Origami Solver, Strain Colours and controls, but no Rhino-layer pipelines and no 3D Print group: a **Huffman Tower generator** group draws David Huffman's *Hexagonal Column with Cusps* (1978) with a Python 3 component and wires its curves and target angles straight into the solver (`M`, `V`, `B`, `F`, `H`, `S`, `MAin`, `VAin`). The component imports [`examples/huffman_tower.py`](examples/huffman_tower.py) from the folder next to the definition, so the `.gh` file has to stay inside this repository's `grasshopper` folder. Open it in Grasshopper with any Rhino document (nothing is read from the layers) and drag **Fold**. Its sliders are **Cells** (6 for a hexagon), **Cap** (height of the flat cap bands), **P** (parabola segments per branch), **Parabola Angle** and **Circle Angle** (54° each when the file opens: the angles of the web app's `huffmanTower.svg`, whose crease strokes have opacity 0.3), **Cap Line Angle** (used when **Cap Line Hinge** is off) and the **Seam** toggle. With **Paper targets** on, every crease segment instead gets the fold angle of the smooth solution in Mundilova, Demaine, Lang and Tachi's 2024 analysis (about 92–97° on the parabolas, 61–94° on the circles), and the segments are separate lines; that folds the column much deeper at the waist than the web app's version (see the examples README). The component outputs the curves on M, V, B, F, H and S plus the angle lists MA and VA; its *Generator Info* panel shows the counts and angles.
 
-The *Pattern source* group holds one Stream Filter per solver input, switched by **Use generator**: 0 is the Rhino layers (the pipelines), 1 is the generator. The solver's `MAin` and `VAin` inputs take a target angle per curve when the list is as long as the curve list; otherwise the angles come from the Rhino objects' `TargetAngleDeg` as before. The generator and `examples/HuffmanTower.3dm` (built by `build_huffman_tower_3dm.py` from the same module) give the same mesh: 546 nodes, 1045 faces, the same targets (1075 mesh vertices after the split at the creases). See the [examples README](examples/README.md#huffman-tower-hexagonal-column-with-cusps) for the pattern and the fold.
+The solver's `MAin` and `VAin` inputs take a target angle per curve when the list is as long as the curve list (curves made in Grasshopper carry no User Text); in `OrigamiSim.gh` they are left unconnected and the angles come from the Rhino objects' `TargetAngleDeg`. The generator and `examples/HuffmanTower.3dm` (built by `build_huffman_tower_3dm.py` from the same module, for folding in `OrigamiSim.gh` from layers) give the same mesh: 546 nodes, 1045 faces, the same targets (1075 mesh vertices after the split at the creases). See the [examples README](examples/README.md#huffman-tower-hexagonal-column-with-cusps) for the pattern and the fold.
 
 ## Constants
 
